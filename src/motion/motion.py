@@ -5,16 +5,13 @@ Motion analysis: displacement, speed (px/frame), direction, state.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from src.perception.tracker import TrackedObject
 
 
-# Minimum displacement (pixels) to consider movement
 MIN_MOVE_PX = 2.5
-# Smoothing factor for speed (EMA)
 SMOOTH_ALPHA = 0.35
-
 
 DIRECTION_MAP = [
     (0, "RIGHT"),
@@ -44,6 +41,7 @@ def _angle_to_direction(angle_deg: float) -> str:
 class MotionAnalyzer:
     """
     Computes per-track motion metrics from consecutive centers.
+    Only processes objects with valid track IDs for meaningful motion.
     """
 
     def __init__(self, min_move: float = MIN_MOVE_PX, alpha: float = SMOOTH_ALPHA):
@@ -89,8 +87,7 @@ class MotionAnalyzer:
                     obj.direction = "STATIONARY"
                     obj.state = "STATIONARY"
                 else:
-                    # atan2: y positive down in image coordinates
-                    angle = math.degrees(math.atan2(-dy, dx))  # invert y for UP
+                    angle = math.degrees(math.atan2(-dy, dx))
                     if angle < 0:
                         angle += 360.0
                     obj.direction = _angle_to_direction(angle)
@@ -98,7 +95,7 @@ class MotionAnalyzer:
 
             self._prev_centers[tid] = (cx, cy)
 
-        # prune lost tracks
+        # Prune lost tracks
         lost = [k for k in self._prev_centers if k not in current_ids]
         for k in lost:
             del self._prev_centers[k]
