@@ -39,7 +39,7 @@ from src.analytics.analytics import (
 from src.events.events import EventEngine
 from src.motion.motion import MotionAnalyzer
 from src.perception.tracker import Tracker, TrackedObject
-from src.perception.detection import DetectionConfig
+from src.perception.detector import DetectionConfig
 from src.thermal.thermal import (
     compute_roi_stats,
     process_thermal,
