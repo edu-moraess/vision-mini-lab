@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 from ultralytics import YOLO
@@ -113,7 +113,15 @@ class Tracker:
     def update(
         self,
         image_rgb: np.ndarray,
+        max_det: Optional[int] = None,
     ) -> List[TrackedObject]:
+        """
+        Executa tracking com fallback para detecção.
+        Se max_det for fornecido, usa esse valor;
+        caso contrário, usa self.max_det.
+        """
+        if max_det is not None:
+            self.max_det = int(max_det)
 
         try:
 
@@ -351,7 +359,11 @@ class Tracker:
     def _detect_without_tracking(
         self,
         image_rgb: np.ndarray,
+        max_det: Optional[int] = None,
     ) -> List[TrackedObject]:
+
+        if max_det is not None:
+            self.max_det = int(max_det)
 
         try:
 
@@ -465,7 +477,7 @@ class Tracker:
         self,
         conf: float,
         iou: float,
-        max_det: int | None = None,
+        max_det: Optional[int] = None,
     ) -> None:
 
         self.conf = float(
