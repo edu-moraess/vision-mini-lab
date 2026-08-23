@@ -65,23 +65,109 @@ logger = logging.getLogger("vision-mini-lab")
 
 st.set_page_config(
     page_title="VISION MINI LAB",
-    page_icon=None,
+    page_icon="🚦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
 # =============================================================================
-# CSS
+# EMOJIS PARA CLASSES (COCO - cobertura completa para ruas e galpões)
+# =============================================================================
+
+CLASS_EMOJIS = {
+    "person": "🧑",
+    "bicycle": "🚲",
+    "car": "🚗",
+    "motorcycle": "🏍️",
+    "airplane": "✈️",
+    "bus": "🚌",
+    "train": "🚆",
+    "truck": "🚚",
+    "boat": "⛵",
+    "traffic light": "🚦",
+    "fire hydrant": "🧯",
+    "stop sign": "🛑",
+    "parking meter": "🅿️",
+    "bench": "🪑",
+    "bird": "🐦",
+    "cat": "🐱",
+    "dog": "🐶",
+    "horse": "🐴",
+    "sheep": "🐑",
+    "cow": "🐄",
+    "elephant": "🐘",
+    "bear": "🐻",
+    "zebra": "🦓",
+    "giraffe": "🦒",
+    "backpack": "🎒",
+    "umbrella": "☂️",
+    "handbag": "👜",
+    "tie": "👔",
+    "suitcase": "🧳",
+    "frisbee": "🥏",
+    "skis": "🎿",
+    "snowboard": "🏂",
+    "sports ball": "⚽",
+    "kite": "🪁",
+    "baseball bat": "⚾",
+    "baseball glove": "🧤",
+    "skateboard": "🛹",
+    "surfboard": "🏄",
+    "tennis racket": "🎾",
+    "bottle": "🍾",
+    "wine glass": "🍷",
+    "cup": "☕",
+    "fork": "🍴",
+    "knife": "🔪",
+    "spoon": "🥄",
+    "bowl": "🥣",
+    "banana": "🍌",
+    "apple": "🍎",
+    "sandwich": "🥪",
+    "orange": "🍊",
+    "broccoli": "🥦",
+    "carrot": "🥕",
+    "hot dog": "🌭",
+    "pizza": "🍕",
+    "donut": "🍩",
+    "cake": "🎂",
+    "chair": "🪑",
+    "couch": "🛋️",
+    "potted plant": "🪴",
+    "bed": "🛏️",
+    "dining table": "🍽️",
+    "toilet": "🚽",
+    "tv": "📺",
+    "laptop": "💻",
+    "mouse": "🖱️",
+    "remote": "📟",
+    "keyboard": "⌨️",
+    "cell phone": "📱",
+    "microwave": "📡",
+    "oven": "🔥",
+    "toaster": "🍞",
+    "sink": "🚰",
+    "refrigerator": "🧊",
+    "book": "📖",
+    "clock": "🕰️",
+    "vase": "🏺",
+    "scissors": "✂️",
+    "teddy bear": "🧸",
+    "hair drier": "💨",
+    "toothbrush": "🪥",
+}
+
+
+# =============================================================================
+# CSS (sem dependência externa, fontes nativas para celular)
 # =============================================================================
 
 st.markdown(
     """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
-
 html, body, [class*="css"] {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .stApp {
@@ -90,25 +176,25 @@ html, body, [class*="css"] {
 }
 
 h1, h2, h3, h4 {
-    font-family: 'JetBrains Mono', monospace !important;
-    font-weight: 500 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-weight: 600 !important;
     letter-spacing: 0.04em;
     color: #e8e8f0 !important;
 }
 
 .main-title {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 1.6rem;
-    font-weight: 600;
-    letter-spacing: 0.12em;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 1.8rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
     color: #f0f0f8;
     margin-bottom: 0.15rem;
 }
 
 .sub-title {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem;
-    letter-spacing: 0.18em;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 0.8rem;
+    letter-spacing: 0.15em;
     color: #6b6b78;
     margin-bottom: 1.5rem;
 }
@@ -123,7 +209,7 @@ section[data-testid="stSidebar"] {
     color: #c8c8d4;
     border: 1px solid #2a2a34;
     border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 0.8rem;
     letter-spacing: 0.05em;
 }
@@ -142,7 +228,7 @@ div[data-testid="stMetric"] {
 
 div[data-testid="stMetric"] label {
     color: #7a7a88 !important;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 0.7rem !important;
     letter-spacing: 0.08em;
 }
@@ -158,7 +244,7 @@ div[data-testid="stMetric"] label {
     border: 1px solid #1e1e26;
     border-radius: 4px;
     padding: 0.75rem 1rem;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 0.78rem;
     color: #a0a0b0;
     line-height: 1.55;
@@ -170,7 +256,7 @@ div[data-testid="stMetric"] label {
     border-radius: 4px;
     padding: 0.55rem 0.8rem;
     margin-bottom: 0.8rem;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 0.75rem;
 }
 
@@ -181,7 +267,7 @@ div[data-testid="stMetric"] label {
     border-radius: 3px;
     padding: 0.25rem 0.6rem;
     margin: 0.15rem 0.3rem 0.15rem 0;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 0.72rem;
     color: #8a8a98;
 }
@@ -271,11 +357,12 @@ def draw_overlays(
         # Bounding box
         cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2, cv2.LINE_AA)
 
-        # Label: CLASS · ID/DET · CONFIDENCE
-        label = f"{obj.class_name.upper()} · {obj.display_id} · {obj.confidence:.0%}"
+        # Label: EMOJI + CLASS - ID - CONFIDENCE
+        emoji = CLASS_EMOJIS.get(obj.class_name, "🧩")
+        label = f"{emoji} {obj.class_name.upper()} - {obj.display_id} - {obj.confidence:.0%}"
 
         if show_motion and obj.track_id > 0 and obj.state == "MOVING":
-            label += f" · {obj.direction} · {obj.speed:.1f}px/f"
+            label += f" - {obj.direction} - {obj.speed:.1f}px/f"
 
         (text_width, text_height), _ = cv2.getTextSize(label, font, 0.48, 1)
         label_y = max(y1, text_height + 10)
@@ -371,11 +458,11 @@ init_state()
 # =============================================================================
 
 with st.sidebar:
-    st.markdown("### CONTROLS")
+    st.markdown("### 🎛️ CONTROLS")
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # Perception Mode
-    st.markdown("#### PERCEPTION MODE")
+    st.markdown("#### 🧠 PERCEPTION MODE")
 
     perception_mode = st.selectbox(
         "Perception Mode",
@@ -424,7 +511,7 @@ with st.sidebar:
         st.rerun()
 
     # Advanced Settings
-    with st.expander("ADVANCED PERCEPTION", expanded=False):
+    with st.expander("⚙️ ADVANCED PERCEPTION", expanded=False):
         adv = st.session_state.perception_config.copy()
 
         adv["conf"] = st.slider("Detection Confidence", 0.15, 0.90, adv["conf"], 0.05)
@@ -451,7 +538,7 @@ with st.sidebar:
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # Model selection
-    st.markdown("#### MODEL")
+    st.markdown("#### 🤖 MODEL")
 
     model_choice = st.selectbox(
         "YOLO Model",
@@ -470,7 +557,7 @@ with st.sidebar:
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # View / Thermal settings
-    st.markdown("#### VIEW")
+    st.markdown("#### 👁️ VIEW")
 
     view_mode = st.radio(
         "Display Mode",
@@ -486,7 +573,7 @@ with st.sidebar:
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # Overlays
-    st.markdown("#### OVERLAYS")
+    st.markdown("#### 📍 OVERLAYS")
 
     show_tracks = st.checkbox("Trajectories", value=True)
     show_motion_label = st.checkbox("Motion Labels", value=False)
@@ -494,7 +581,7 @@ with st.sidebar:
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # ROI
-    st.markdown("#### ROI")
+    st.markdown("#### 🎯 ROI")
 
     enable_roi = st.checkbox("Enable ROI", value=False)
 
@@ -510,7 +597,7 @@ with st.sidebar:
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # Line crossing
-    st.markdown("#### LINE CROSSING")
+    st.markdown("#### 📏 LINE CROSSING")
 
     enable_line = st.checkbox("Enable Line", value=False)
 
@@ -526,7 +613,7 @@ with st.sidebar:
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
     # Reset
-    if st.button("RESET STATE", use_container_width=True):
+    if st.button("🔄 RESET STATE", use_container_width=True):
         st.session_state.motion.reset()
         st.session_state.events.clear()
         st.session_state.all_centers = []
@@ -545,8 +632,8 @@ with st.sidebar:
 # HEADER
 # =============================================================================
 
-st.markdown('<div class="main-title">VISION MINI LAB</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">REAL-TIME VISUAL INTELLIGENCE</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🚦 VISION MINI LAB</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">📡 REAL-TIME VISUAL INTELLIGENCE</div>', unsafe_allow_html=True)
 
 
 # =============================================================================
@@ -608,7 +695,7 @@ else:
 # INPUT
 # =============================================================================
 
-st.markdown("### INPUT")
+st.markdown("### 📥 INPUT")
 
 input_type = st.radio(
     "Source",
@@ -823,19 +910,19 @@ elif uploaded is not None and input_type == "Video":
 col_view, col_info = st.columns([1.6, 1.0])
 
 with col_view:
-    st.markdown("### LIVE VIEW")
+    st.markdown("### 🎥 LIVE VIEW")
 
     if display_image is not None:
         st.image(display_image, width="stretch", channels="RGB")
     else:
         st.markdown(
-            '<div class="info-box">Waiting for image or video input.</div>',
+            '<div class="info-box">⏳ Waiting for image or video input.</div>',
             unsafe_allow_html=True,
         )
 
 
 with col_info:
-    st.markdown("### OBJECT INTELLIGENCE")
+    st.markdown("### 🧠 OBJECT INTELLIGENCE")
 
     active_objects = len(objects)
     tracked_objects = sum(1 for o in objects if o.track_id > 0)
@@ -883,17 +970,17 @@ with col_info:
     # Detection status
     if objects:
         st.markdown(
-            f'<div class="detection-status">DETECTION ENGINE · {len(objects)} OBJECT(S)</div>',
+            f'<div class="detection-status">🔍 DETECTION ENGINE - {len(objects)} OBJECT(S)</div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            '<div class="detection-status">DETECTION ENGINE · NO OBJECTS</div>',
+            '<div class="detection-status">🔍 DETECTION ENGINE - NO OBJECTS</div>',
             unsafe_allow_html=True,
         )
 
     # PERCEPTION DEBUG
-    st.markdown("#### PERCEPTION DEBUG")
+    st.markdown("#### 🛠️ PERCEPTION DEBUG")
 
     stats = tracker.last_stats
     debug_lines = [
@@ -915,7 +1002,8 @@ with col_info:
     if objects:
         options = {}
         for obj in objects:
-            label = f"{obj.class_name} {obj.display_id}"
+            emoji = CLASS_EMOJIS.get(obj.class_name, "🧩")
+            label = f"{emoji} {obj.class_name} {obj.display_id}"
             options[label] = obj.track_id
 
         selected_label = st.selectbox(
@@ -932,18 +1020,19 @@ with col_info:
         )
 
         if selected_obj is not None:
+            emoji = CLASS_EMOJIS.get(selected_obj.class_name, "📦")
             info_lines = [
-                f"ID · {selected_obj.display_id}",
-                f"Class · {selected_obj.class_name}",
-                f"Confidence · {selected_obj.confidence:.1%}",
-                f"State · {selected_obj.state}",
+                f"ID - {selected_obj.display_id}",
+                f"{emoji} Class - {selected_obj.class_name}",
+                f"Confidence - {selected_obj.confidence:.1%}",
+                f"State - {selected_obj.state}",
             ]
             if selected_obj.track_id > 0:
                 info_lines.extend([
-                    f"Direction · {selected_obj.direction}",
-                    f"Speed · {selected_obj.speed:.2f} px/frame",
+                    f"Direction - {selected_obj.direction}",
+                    f"Speed - {selected_obj.speed:.2f} px/frame",
                 ])
-            info_lines.append(f"Center · ({selected_obj.center[0]:.0f}, {selected_obj.center[1]:.0f})")
+            info_lines.append(f"Center - ({selected_obj.center[0]:.0f}, {selected_obj.center[1]:.0f})")
 
             st.markdown(
                 f'<div class="info-box">{"<br>".join(info_lines)}</div>',
@@ -957,13 +1046,13 @@ with col_info:
 
     # Thermal
     if thermal_stats is not None:
-        st.markdown("#### THERMAL INTENSITY")
+        st.markdown("#### 🌡️ THERMAL INTENSITY")
         st.markdown(
             f'<div class="info-box">'
-            f'Mean · {thermal_stats.mean:.1f}<br>'
-            f'Max · {thermal_stats.maximum:.1f}<br>'
-            f'Min · {thermal_stats.minimum:.1f}<br>'
-            f'Std · {thermal_stats.std:.1f}'
+            f'Mean - {thermal_stats.mean:.1f}<br>'
+            f'Max - {thermal_stats.maximum:.1f}<br>'
+            f'Min - {thermal_stats.minimum:.1f}<br>'
+            f'Std - {thermal_stats.std:.1f}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -971,13 +1060,13 @@ with col_info:
         if current_roi is not None and intensity_map is not None:
             roi_stats = compute_roi_stats(intensity_map, current_roi)
             if roi_stats:
-                st.markdown("#### THERMAL ROI")
+                st.markdown("#### 🌡️ THERMAL ROI")
                 st.markdown(
                     f'<div class="info-box">'
-                    f'Mean · {roi_stats.mean:.1f}<br>'
-                    f'Max · {roi_stats.maximum:.1f}<br>'
-                    f'Min · {roi_stats.minimum:.1f}<br>'
-                    f'Variance · {roi_stats.variance:.1f}'
+                    f'Mean - {roi_stats.mean:.1f}<br>'
+                    f'Max - {roi_stats.maximum:.1f}<br>'
+                    f'Min - {roi_stats.minimum:.1f}<br>'
+                    f'Variance - {roi_stats.variance:.1f}'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -988,7 +1077,7 @@ with col_info:
 # =============================================================================
 
 st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
-st.markdown("### ANALYTICS")
+st.markdown("### 📊 ANALYTICS")
 
 if objects or st.session_state.all_centers:
     # Object activity
@@ -1068,7 +1157,7 @@ if objects or st.session_state.all_centers:
 
 else:
     st.markdown(
-        '<div class="info-box">Load an image or video to generate analytics.</div>',
+        '<div class="info-box">📂 Load an image or video to generate analytics.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1078,7 +1167,7 @@ else:
 # =============================================================================
 
 st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
-st.markdown("### EVENT TIMELINE")
+st.markdown("### ⏱️ EVENT TIMELINE")
 
 recent = events.get_recent(30)
 
@@ -1088,7 +1177,7 @@ if recent:
 
     for event in reversed(recent):
         t_rel = event.timestamp - t0
-        direction = f" · {event.direction}" if event.direction else ""
+        direction = f" - {event.direction}" if event.direction else ""
         lines.append(
             f"{t_rel:06.1f}s  {event.event_type:<16}  ID {event.track_id:<4}  {event.class_name}{direction}"
         )
@@ -1096,7 +1185,7 @@ if recent:
     st.code("\n".join(lines), language=None)
 else:
     st.markdown(
-        '<div class="info-box">No events recorded yet.</div>',
+        '<div class="info-box">📭 No events recorded yet.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1108,8 +1197,8 @@ else:
 st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
 st.markdown(
     '<div class="info-box">'
-    'VISION MINI LAB · Relative Thermal Intensity ≠ calibrated temperature · '
-    'Speed = pixels/frame · Physical metrics require geometric calibration.'
+    '🚦 VISION MINI LAB - Relative Thermal Intensity (not calibrated temperature) - '
+    'Speed = pixels/frame - Physical metrics require geometric calibration.'
     '</div>',
     unsafe_allow_html=True,
 )
