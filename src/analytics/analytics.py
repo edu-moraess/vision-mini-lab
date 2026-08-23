@@ -2,19 +2,13 @@
 VISION MINI LAB
 Analytics visualizations using Plotly.
 
-Clean dark technical style.
-Safe Plotly configuration.
-Movement density is spatial density and is NOT thermal data.
+Technical, scientific, engineering, minimal, dark.
+All charts use apply_chart_theme() for consistency.
 """
 
 from __future__ import annotations
 
-from typing import (
-    Dict,
-    List,
-    Optional,
-    Tuple,
-)
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
@@ -24,44 +18,35 @@ from src.perception.tracker import TrackedObject
 
 
 # =============================================================================
-# SHARED STYLE
+# VISION COLOR PALETTE
 # =============================================================================
 
-DARK_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(18,18,22,0.6)",
-    font=dict(
-        family="Inter, system-ui, sans-serif",
-        size=12,
-        color="#c8c8d0",
-    ),
-    margin=dict(
-        l=48,
-        r=24,
-        t=40,
-        b=40,
-    ),
-    xaxis=dict(
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.06)",
-        zeroline=False,
-        showline=True,
-        linecolor="rgba(255,255,255,0.15)",
-    ),
-    yaxis=dict(
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.06)",
-        zeroline=False,
-        showline=True,
-        linecolor="rgba(255,255,255,0.15)",
-    ),
-    legend=dict(
-        bgcolor="rgba(0,0,0,0)",
-        borderwidth=0,
-        font=dict(size=11),
-    ),
-)
+VISION_COLORS = {
+    "background": "#0c0c0f",
+    "surface": "#121218",
+    "surface_alt": "#1a1a22",
+    "border": "#1e1e26",
+    "text": "#d0d0d8",
+    "text_muted": "#7a7a88",
+    "primary": "#3d8bfd",
+    "secondary": "#5eead4",
+    "success": "#34d399",
+    "warning": "#f59e0b",
+    "danger": "#f87171",
+    "thermal": "#f97316",
+}
 
+# Cyclic palette for charts (distinct colors)
+CHART_PALETTE = [
+    "#3d8bfd", "#5eead4", "#f59e0b", "#a78bfa", "#f472b6",
+    "#34d399", "#fb7185", "#38bdf8", "#facc15", "#818cf8",
+    "#fb923c", "#c084fc", "#2dd4bf", "#e879f9", "#84cc16",
+]
+
+
+# =============================================================================
+# MODEBAR CONFIG
+# =============================================================================
 
 MODEBAR_CONFIG = {
     "displayModeBar": True,
@@ -74,17 +59,67 @@ MODEBAR_CONFIG = {
 
 
 # =============================================================================
-# BASE FIGURE
+# CHART THEME
 # =============================================================================
 
-def _base_fig() -> go.Figure:
-
-    fig = go.Figure()
-
+def apply_chart_theme(fig: go.Figure) -> go.Figure:
+    """Apply the global VISION MINI LAB dark theme to a Plotly figure."""
     fig.update_layout(
-        **DARK_LAYOUT
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(18,18,22,0.6)",
+        font=dict(
+            family="Inter, system-ui, sans-serif",
+            size=12,
+            color=VISION_COLORS["text"],
+        ),
+        margin=dict(l=48, r=24, t=48, b=40),
+        xaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zeroline=False,
+            showline=True,
+            linecolor="rgba(255,255,255,0.15)",
+            tickfont=dict(size=11, color=VISION_COLORS["text_muted"]),
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor="rgba(255,255,255,0.06)",
+            zeroline=False,
+            showline=True,
+            linecolor="rgba(255,255,255,0.15)",
+            tickfont=dict(size=11, color=VISION_COLORS["text_muted"]),
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0,
+            font=dict(size=11, color=VISION_COLORS["text_muted"]),
+        ),
+        title=dict(
+            font=dict(size=14, color=VISION_COLORS["text"]),
+            x=0.0,
+            xanchor="left",
+        ),
+        hoverlabel=dict(
+            bgcolor=VISION_COLORS["surface_alt"],
+            bordercolor=VISION_COLORS["border"],
+            font=dict(size=12, color=VISION_COLORS["text"]),
+        ),
     )
+    return fig
 
+
+def render_empty_state(fig: go.Figure, message: str) -> go.Figure:
+    """Render a professional empty state inside a figure."""
+    fig.add_annotation(
+        text=message,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=14, color=VISION_COLORS["text_muted"]),
+    )
+    apply_chart_theme(fig)
     return fig
 
 
@@ -94,243 +129,127 @@ def _base_fig() -> go.Figure:
 
 def object_activity_chart(
     class_counts: Dict[str, int],
-    title: str = "OBJECT ACTIVITY",
+    title: str = "Object Activity",
 ) -> go.Figure:
-    """Active object counts by class."""
-
-    fig = _base_fig()
+    """Objects detected in the current frame, grouped by class."""
+    fig = go.Figure()
 
     if not class_counts:
-
-        fig.add_annotation(
-            text="No active objects",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=320,
-        )
-
+        render_empty_state(fig, "No objects detected")
+        fig.update_layout(title=title, height=300)
         return fig
 
-    classes = list(
-        class_counts.keys()
-    )
+    classes = list(class_counts.keys())
+    counts = list(class_counts.values())
+    colors = [CHART_PALETTE[i % len(CHART_PALETTE)] for i in range(len(classes))]
 
-    counts = list(
-        class_counts.values()
-    )
-
-    fig.add_trace(
-        go.Bar(
-            x=classes,
-            y=counts,
-            marker_color="#3d8bfd",
-            marker_line_width=0,
-            hovertemplate=(
-                "%{x}: %{y}"
-                "<extra></extra>"
-            ),
-        )
-    )
+    fig.add_trace(go.Bar(
+        x=classes,
+        y=counts,
+        marker_color=colors,
+        marker_line_width=0,
+        hovertemplate="Class: %{x}<br>Count: %{y}<extra></extra>",
+    ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=320,
+        title=title,
+        height=300,
         yaxis_title="Count",
-        xaxis_title="Class",
+        xaxis_title="",
+        showlegend=False,
     )
-
+    apply_chart_theme(fig)
     return fig
 
 
 # =============================================================================
-# CONFIDENCE
+# CONFIDENCE DISTRIBUTION
 # =============================================================================
 
 def confidence_chart(
     objects: List[TrackedObject],
-    title: str = "CONFIDENCE DISTRIBUTION",
+    title: str = "Confidence Distribution",
 ) -> go.Figure:
-    """Confidence score per detection."""
-
-    fig = _base_fig()
+    """Confidence distribution of the current detections."""
+    fig = go.Figure()
 
     if not objects:
-
-        fig.add_annotation(
-            text="No detections",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=320,
-        )
-
+        render_empty_state(fig, "No detections")
+        fig.update_layout(title=title, height=300)
         return fig
 
-    confs = [
-        float(o.confidence)
-        for o in objects
-    ]
-
+    confs = [float(o.confidence) for o in objects]
     labels = [
-        f"{o.class_name} #{o.track_id}"
-        if o.track_id > 0
-        else f"{o.class_name} DET"
+        f"{o.class_name} {o.display_id}"
+        for o in objects
+    ]
+    colors = [
+        CHART_PALETTE[o.class_id % len(CHART_PALETTE)]
         for o in objects
     ]
 
-    fig.add_trace(
-        go.Bar(
-            x=labels,
-            y=confs,
-            marker_color="#5eead4",
-            marker_line_width=0,
-            hovertemplate=(
-                "%{x}"
-                "<br>Conf: %{y:.1%}"
-                "<extra></extra>"
-            ),
-        )
-    )
+    fig.add_trace(go.Bar(
+        x=labels,
+        y=confs,
+        marker_color=colors,
+        marker_line_width=0,
+        hovertemplate="%{x}<br>Confidence: %{y:.1%}<extra></extra>",
+    ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=320,
+        title=title,
+        height=300,
         yaxis_title="Confidence",
-        yaxis_range=[
-            0,
-            1.05,
-        ],
-        xaxis_tickangle=-30,
+        yaxis_range=[0, 1.05],
+        xaxis_tickangle=-35,
+        showlegend=False,
     )
-
+    apply_chart_theme(fig)
     return fig
 
 
 # =============================================================================
-# MOTION
+# MOTION SPEED
 # =============================================================================
 
 def motion_chart(
     objects: List[TrackedObject],
-    title: str = "MOTION SPEED (px/frame)",
+    title: str = "Motion Speed (px/frame)",
 ) -> go.Figure:
-    """Current speed for tracked objects."""
-
-    fig = _base_fig()
+    """Estimated object displacement in pixels per frame."""
+    fig = go.Figure()
 
     if not objects:
-
-        fig.add_annotation(
-            text="No tracked objects",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=320,
-        )
-
+        render_empty_state(fig, "No movement data")
+        fig.update_layout(title=title, height=300)
         return fig
 
     labels = [
-        (
-            f"{o.class_name} #{o.track_id}"
-            if o.track_id > 0
-            else f"{o.class_name} DET"
-        )
+        f"{o.class_name} {o.display_id}"
         for o in objects
     ]
-
-    speeds = [
-        max(
-            0.0,
-            float(o.speed),
-        )
-        for o in objects
-    ]
-
+    speeds = [max(0.0, float(o.speed)) for o in objects]
     colors = [
-        "#f59e0b"
-        if o.state == "MOVING"
-        else "#6b7280"
+        VISION_COLORS["warning"] if o.state == "MOVING" else VISION_COLORS["text_muted"]
         for o in objects
     ]
 
-    directions = [
-        o.direction
-        for o in objects
-    ]
-
-    fig.add_trace(
-        go.Bar(
-            x=labels,
-            y=speeds,
-            marker_color=colors,
-            marker_line_width=0,
-            hovertemplate=(
-                "%{x}"
-                "<br>Speed: %{y:.2f} px/frame"
-                "<br>%{text}"
-                "<extra></extra>"
-            ),
-            text=directions,
-        )
-    )
+    fig.add_trace(go.Bar(
+        x=labels,
+        y=speeds,
+        marker_color=colors,
+        marker_line_width=0,
+        hovertemplate="%{x}<br>Speed: %{y:.2f} px/frame<extra></extra>",
+    ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=320,
+        title=title,
+        height=300,
         yaxis_title="Speed (px/frame)",
-        xaxis_tickangle=-30,
+        xaxis_tickangle=-35,
+        showlegend=False,
     )
-
+    apply_chart_theme(fig)
     return fig
 
 
@@ -339,214 +258,92 @@ def motion_chart(
 # =============================================================================
 
 def trajectory_chart(
-    trajectories: Dict[
-        int,
-        List[
-            Tuple[float, float]
-        ],
-    ],
-    current_positions: Dict[
-        int,
-        Tuple[float, float],
-    ],
-    class_names: Dict[
-        int,
-        str,
-    ],
+    trajectories: Dict[int, List[Tuple[float, float]]],
+    current_positions: Dict[int, Tuple[float, float]],
+    class_names: Dict[int, str],
     selected_id: Optional[int] = None,
-    img_shape: Optional[
-        Tuple[int, int]
-    ] = None,
-    title: str = "TRAJECTORY",
+    img_shape: Optional[Tuple[int, int]] = None,
+    title: str = "Trajectory",
 ) -> go.Figure:
-    """Scatter visualization of object trajectories."""
-
-    fig = _base_fig()
+    """Spatial paths of tracked objects with start / current markers."""
+    fig = go.Figure()
 
     if not trajectories:
-
-        fig.add_annotation(
-            text="No trajectories",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=400,
-        )
-
+        render_empty_state(fig, "No trajectory data")
+        fig.update_layout(title=title, height=400)
         return fig
 
-    ids = list(
-        trajectories.keys()
-    )
+    ids = list(trajectories.keys())
 
-    if (
-        selected_id is not None
-        and selected_id in trajectories
-    ):
-
-        ids = [
-            selected_id
-        ]
-
+    if selected_id is not None and selected_id in trajectories:
+        ids = [selected_id]
     elif len(ids) > 12:
-
         ids = ids[-12:]
 
-    palette = [
-        "#3d8bfd",
-        "#5eead4",
-        "#f59e0b",
-        "#a78bfa",
-        "#f472b6",
-        "#34d399",
-        "#fb7185",
-        "#38bdf8",
-    ]
-
     for i, track_id in enumerate(ids):
-
-        points = trajectories.get(
-            track_id,
-            [],
-        )
-
+        points = trajectories.get(track_id, [])
         if not points:
-
             continue
 
-        xs = [
-            point[0]
-            for point in points
-        ]
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        color = CHART_PALETTE[i % len(CHART_PALETTE)]
+        name = f"{class_names.get(track_id, 'obj')} #{track_id}"
 
-        ys = [
-            point[1]
-            for point in points
-        ]
+        # Main trajectory line
+        fig.add_trace(go.Scattergl(
+            x=xs,
+            y=ys,
+            mode="lines",
+            name=name,
+            line=dict(color=color, width=1.5),
+            hovertemplate=f"{name}<br>x=%{{x:.0f}} y=%{{y:.0f}}<extra></extra>",
+            showlegend=True,
+        ))
 
-        color = (
-            palette[
-                i % len(palette)
-            ]
-        )
+        # Start marker (open circle)
+        fig.add_trace(go.Scattergl(
+            x=[xs[0]],
+            y=[ys[0]],
+            mode="markers",
+            marker=dict(size=8, color=color, symbol="circle-open", line=dict(width=2, color=color)),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
 
-        name = (
-            f"{class_names.get(track_id, 'obj')}"
-            f" #{track_id}"
-        )
-
-        # Main trajectory
-        fig.add_trace(
-            go.Scattergl(
-                x=xs,
-                y=ys,
-                mode="lines+markers",
-                name=name,
-                line=dict(
-                    color=color,
-                    width=2,
-                ),
-                marker=dict(
-                    size=4,
-                    color=color,
-                ),
-                hovertemplate=(
-                    f"{name}"
-                    "<br>x=%{x:.0f}"
-                    " y=%{y:.0f}"
-                    "<extra></extra>"
-                ),
-            )
-        )
-
-        # Start position
-        fig.add_trace(
-            go.Scattergl(
-                x=[xs[0]],
-                y=[ys[0]],
-                mode="markers",
-                marker=dict(
-                    size=9,
-                    color=color,
-                    symbol="circle-open",
-                    line_width=2,
-                ),
-                showlegend=False,
-                hoverinfo="skip",
-            )
-        )
-
-        # Current position
+        # Current position (diamond)
         if track_id in current_positions:
-
-            cx, cy = (
-                current_positions[
-                    track_id
-                ]
-            )
-
-            fig.add_trace(
-                go.Scattergl(
-                    x=[cx],
-                    y=[cy],
-                    mode="markers",
-                    marker=dict(
-                        size=11,
-                        color=color,
-                        symbol="diamond",
-                    ),
-                    showlegend=False,
-                    hovertemplate=(
-                        f"Current {name}"
-                        "<extra></extra>"
-                    ),
-                )
-            )
+            cx, cy = current_positions[track_id]
+            fig.add_trace(go.Scattergl(
+                x=[cx],
+                y=[cy],
+                mode="markers",
+                marker=dict(size=10, color=color, symbol="diamond"),
+                showlegend=False,
+                hovertemplate=f"Current {name}<extra></extra>",
+            ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=420,
+        title=title,
+        height=400,
         xaxis_title="X (px)",
         yaxis_title="Y (px)",
-        yaxis=dict(
-            autorange="reversed"
+        yaxis=dict(autorange="reversed"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5,
         ),
     )
 
     if img_shape is not None:
-
         h, w = img_shape[:2]
+        fig.update_xaxes(range=[0, w])
+        fig.update_yaxes(range=[h, 0], autorange=False)
 
-        fig.update_xaxes(
-            range=[
-                0,
-                w,
-            ]
-        )
-
-        fig.update_yaxes(
-            range=[
-                h,
-                0,
-            ]
-        )
-
+    apply_chart_theme(fig)
     return fig
 
 
@@ -556,211 +353,95 @@ def trajectory_chart(
 
 def event_timeline_chart(
     events: List[Event],
-    title: str = "EVENT TIMELINE",
+    title: str = "Event Timeline",
 ) -> go.Figure:
-    """Horizontal timeline of recent events."""
-
-    fig = _base_fig()
+    """Temporal event markers."""
+    fig = go.Figure()
 
     if not events:
-
-        fig.add_annotation(
-            text="No events recorded",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=320,
-        )
-
+        render_empty_state(fig, "No events recorded")
+        fig.update_layout(title=title, height=300)
         return fig
 
     t0 = events[0].timestamp
-
-    times = [
-        event.timestamp - t0
-        for event in events
-    ]
-
-    labels = [
-        event.event_type
-        for event in events
-    ]
-
-    texts = [
-        (
-            f"{event.event_type}"
-            f"<br>ID {event.track_id}"
-            f" · {event.class_name}"
-            f"<br>{event.direction}"
-        )
-        for event in events
-    ]
+    times = [e.timestamp - t0 for e in events]
+    labels = [e.event_type for e in events]
 
     color_map = {
-        "OBJECT_ENTERED": "#34d399",
-        "OBJECT_EXITED": "#f87171",
-        "LINE_CROSSED": "#3d8bfd",
-        "STARTED_MOVING": "#f59e0b",
-        "STOPPED": "#9ca3af",
+        "OBJECT_ENTERED": VISION_COLORS["success"],
+        "OBJECT_EXITED": VISION_COLORS["danger"],
+        "LINE_CROSSED": VISION_COLORS["primary"],
+        "STARTED_MOVING": VISION_COLORS["warning"],
+        "STOPPED": VISION_COLORS["text_muted"],
     }
+    colors = [color_map.get(e.event_type, "#a78bfa") for e in events]
 
-    colors = [
-        color_map.get(
-            event.event_type,
-            "#a78bfa",
-        )
-        for event in events
-    ]
-
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=labels,
-            mode="markers+text",
-            marker=dict(
-                size=12,
-                color=colors,
-                symbol="diamond",
-            ),
-            text=[
-                f"#{event.track_id}"
-                for event in events
-            ],
-            textposition="top center",
-            hovertext=texts,
-            hoverinfo="text",
-        )
-    )
+    fig.add_trace(go.Scatter(
+        x=times,
+        y=labels,
+        mode="markers+text",
+        marker=dict(size=11, color=colors, symbol="diamond", line=dict(width=1, color="rgba(0,0,0,0.3)")),
+        text=[f"#{e.track_id}" for e in events],
+        textposition="top center",
+        textfont=dict(size=10, color=VISION_COLORS["text_muted"]),
+        hovertemplate=(
+            "%{text}<br>"
+            "Time: %{x:.1f}s<br>"
+            "<extra></extra>"
+        ),
+        showlegend=False,
+    ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=340,
+        title=title,
+        height=320,
         xaxis_title="Time (s)",
         yaxis_title="",
-        showlegend=False,
     )
-
+    apply_chart_theme(fig)
     return fig
 
 
 # =============================================================================
-# THERMAL
+# THERMAL INTENSITY DISTRIBUTION
 # =============================================================================
 
 def thermal_analysis_chart(
     intensity: np.ndarray,
-    title: str = "THERMAL INTENSITY DISTRIBUTION",
+    title: str = "Thermal Intensity Distribution",
 ) -> go.Figure:
-    """
-    Histogram of relative thermal intensity.
+    """Relative image intensity distribution. Not calibrated temperature."""
+    fig = go.Figure()
 
-    IMPORTANT:
-    These values are relative intensity.
-    They are NOT calibrated Celsius temperatures.
-    """
-
-    fig = _base_fig()
-
-    if (
-        intensity is None
-        or intensity.size == 0
-    ):
-
-        fig.add_annotation(
-            text="No thermal data",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=320,
-        )
-
+    if intensity is None or intensity.size == 0:
+        render_empty_state(fig, "No thermal data")
+        fig.update_layout(title=title, height=300)
         return fig
 
-    flat = (
-        intensity
-        .astype(float)
-        .ravel()
-    )
-
-    flat = flat[
-        np.isfinite(flat)
-    ]
+    flat = intensity.astype(float).ravel()
+    flat = flat[np.isfinite(flat)]
 
     if flat.size == 0:
-
-        fig.add_annotation(
-            text="No valid thermal data",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=320,
-        )
-
+        render_empty_state(fig, "No valid thermal data")
+        fig.update_layout(title=title, height=300)
         return fig
 
-    fig.add_trace(
-        go.Histogram(
-            x=flat,
-            nbinsx=64,
-            marker_color="#f97316",
-            opacity=0.85,
-            hovertemplate=(
-                "Intensity %{x:.1f}"
-                "<br>Count %{y}"
-                "<extra></extra>"
-            ),
-        )
-    )
+    fig.add_trace(go.Histogram(
+        x=flat,
+        nbinsx=64,
+        marker_color=VISION_COLORS["thermal"],
+        opacity=0.85,
+        hovertemplate="Intensity: %{x:.1f}<br>Count: %{y}<extra></extra>",
+    ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=320,
+        title=title,
+        height=300,
         xaxis_title="Relative Intensity",
         yaxis_title="Pixel Count",
+        showlegend=False,
     )
-
+    apply_chart_theme(fig)
     return fig
 
 
@@ -769,208 +450,74 @@ def thermal_analysis_chart(
 # =============================================================================
 
 def movement_density_heatmap(
-    all_centers: List[
-        Tuple[float, float]
-    ],
+    all_centers: List[Tuple[float, float]],
     img_shape: Tuple[int, int],
     bins: int = 40,
-    title: str = "MOVEMENT DENSITY",
+    title: str = "Movement Density",
 ) -> go.Figure:
-    """
-    Spatial density of tracked object centers.
+    """Spatial concentration of tracked object positions."""
+    fig = go.Figure()
 
-    This is NOT a thermal heatmap.
-
-    It represents where object centers have travelled
-    through the image.
-
-    The implementation is deliberately defensive because
-    Streamlit Cloud may use different Plotly versions.
-    """
-
-    fig = _base_fig()
-
-    if img_shape is None:
-
-        fig.add_annotation(
-            text="No image dimensions",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=400,
-        )
-
+    if img_shape is None or len(img_shape) < 2:
+        render_empty_state(fig, "No image dimensions")
+        fig.update_layout(title=title, height=400)
         return fig
 
     h, w = img_shape[:2]
 
-    # -------------------------------------------------------------------------
-    # Validate points
-    # -------------------------------------------------------------------------
-
+    # Validate and filter points
     valid_points = []
-
     for center in all_centers:
-
         try:
-
             if center is None:
                 continue
-
-            x = float(
-                center[0]
-            )
-
-            y = float(
-                center[1]
-            )
-
-        except (
-            TypeError,
-            ValueError,
-            IndexError,
-        ):
-
+            x = float(center[0])
+            y = float(center[1])
+        except (TypeError, ValueError, IndexError):
             continue
 
-        if not np.isfinite(x):
+        if not np.isfinite(x) or not np.isfinite(y):
             continue
-
-        if not np.isfinite(y):
+        if x < 0 or x > w or y < 0 or y > h:
             continue
-
-        if x < 0 or x > w:
-            continue
-
-        if y < 0 or y > h:
-            continue
-
-        valid_points.append(
-            (
-                x,
-                y,
-            )
-        )
+        valid_points.append((x, y))
 
     if not valid_points:
-
-        fig.add_annotation(
-            text="No movement data",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(
-                size=14,
-                color="#666",
-            ),
-        )
-
-        fig.update_layout(
-            title=title,
-            height=400,
-        )
-
+        render_empty_state(fig, "No movement data")
+        fig.update_layout(title=title, height=400)
         return fig
 
-    xs = np.array(
-        [
-            point[0]
-            for point in valid_points
-        ],
-        dtype=float,
-    )
-
-    ys = np.array(
-        [
-            point[1]
-            for point in valid_points
-        ],
-        dtype=float,
-    )
-
-    # -------------------------------------------------------------------------
-    # Safe bin count
-    # -------------------------------------------------------------------------
+    xs = np.array([p[0] for p in valid_points], dtype=float)
+    ys = np.array([p[1] for p in valid_points], dtype=float)
 
     try:
-
-        bins = int(
-            np.clip(
-                bins,
-                8,
-                100,
-            )
-        )
-
+        bins = int(np.clip(bins, 8, 100))
     except Exception:
-
         bins = 40
 
-    # -------------------------------------------------------------------------
-    # Histogram 2D
-    # -------------------------------------------------------------------------
-
-    fig.add_trace(
-        go.Histogram2d(
-            x=xs,
-            y=ys,
-            nbinsx=bins,
-            nbinsy=bins,
-            colorscale="Hot",
-            hovertemplate=(
-                "x=%{x:.0f}"
-                "<br>y=%{y:.0f}"
-                "<br>density=%{z}"
-                "<extra></extra>"
-            ),
-            colorbar=dict(
-                title="Density",
-                thickness=12,
-                len=0.7,
-            ),
-        )
-    )
-
-    # -------------------------------------------------------------------------
-    # Layout
-    # -------------------------------------------------------------------------
+    fig.add_trace(go.Histogram2d(
+        x=xs,
+        y=ys,
+        nbinsx=bins,
+        nbinsy=bins,
+        colorscale="Hot",
+        hovertemplate="x=%{x:.0f}<br>y=%{y:.0f}<br>density=%{z}<extra></extra>",
+        colorbar=dict(
+            title=dict(text="Density", font=dict(size=11, color=VISION_COLORS["text_muted"])),
+            thickness=12,
+            len=0.7,
+            tickfont=dict(size=10, color=VISION_COLORS["text_muted"]),
+        ),
+    ))
 
     fig.update_layout(
-        title=dict(
-            text=title,
-            font=dict(
-                size=14,
-                color="#e0e0e8",
-            ),
-        ),
-        height=420,
+        title=title,
+        height=400,
         xaxis_title="X (px)",
         yaxis_title="Y (px)",
-        xaxis=dict(
-            range=[
-                0,
-                w,
-            ],
-        ),
-        yaxis=dict(
-            range=[
-                h,
-                0,
-            ],
-            autorange=False,
-        ),
+        xaxis=dict(range=[0, w]),
+        yaxis=dict(range=[h, 0], autorange=False),
+        showlegend=False,
     )
-
+    apply_chart_theme(fig)
     return fig
