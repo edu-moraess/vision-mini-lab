@@ -1,6 +1,14 @@
 """
+VISION MINI LAB
 YOLO detector wrapper + advanced detection pipeline.
-Includes multi-scale detection, tiling, deduplication and adaptive confidence.
+
+Includes:
+- Multi-scale detection
+- Tiling with overlap
+- Deduplication (class-aware, IoU + containment)
+- Adaptive confidence filtering
+- Small object handling
+- Light low-light enhancement
 """
 
 from __future__ import annotations
@@ -15,6 +23,10 @@ from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# DATA CLASSES
+# =============================================================================
 
 @dataclass
 class Detection:
@@ -43,6 +55,10 @@ class DetectionConfig:
     enhance_low_light: bool = True
     max_tiles: int = 4
 
+
+# =============================================================================
+# DETECTOR WRAPPER
+# =============================================================================
 
 class Detector:
     """Wrapper around Ultralytics YOLO for detection with advanced features."""
@@ -144,7 +160,7 @@ class Detector:
 
 
 # =============================================================================
-# ADVANCED DETECTION PIPELINE
+# PREPROCESSING
 # =============================================================================
 
 def estimate_brightness_contrast(image_rgb: np.ndarray) -> Tuple[float, float]:
@@ -182,6 +198,10 @@ def preprocess_image(image_rgb: np.ndarray, enhance: bool = False) -> np.ndarray
 
     return image_rgb
 
+
+# =============================================================================
+# TILING
+# =============================================================================
 
 def tile_image(
     image_rgb: np.ndarray,
@@ -229,6 +249,10 @@ def tile_image(
     return tiles
 
 
+# =============================================================================
+# IOU / MERGING
+# =============================================================================
+
 def iou_bbox(
     box_a: Tuple[float, float, float, float],
     box_b: Tuple[float, float, float, float],
@@ -255,11 +279,36 @@ def iou_bbox(
     return inter_area / union
 
 
+def _intersection_area(box_a, box_b) -> float:
+    xa1, ya1, xa2, ya2 = box_a
+    xb1, yb1, xb2, yb2 = box_b
+    inter_x1 = max(xa1, xb1)
+    inter_y1 = max(ya1, yb1)
+    inter_x2 = min(xa2, xb2)
+    inter_y2 = min(ya2, yb2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    return inter_w * inter_h
+
+
+def _box_area(box) -> float:
+    x1, y1, x2, y2 = box
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
 def merge_detections(
     detections: List[Detection],
-    iou_threshold: float = 0.5,
+    iou_threshold: float = 0.40,
+    containment_threshold: float = 0.70,
 ) -> List[Detection]:
-    """Deduplicação class-aware."""
+    """
+    Deduplicação class-aware aprimorada.
+    - Mesma classe
+    - IoU > iou_threshold OR
+      containment > containment_threshold (caixa quase dentro da outra)
+    - Considera também proximidade entre centros
+    Mantém a de maior confiança.
+    """
     if not detections:
         return []
 
@@ -268,17 +317,53 @@ def merge_detections(
 
     for det in sorted_dets:
         duplicate = False
+
         for existing in kept:
             if existing.class_id != det.class_id:
                 continue
-            if iou_bbox(existing.bbox, det.bbox) > iou_threshold:
+
+            # 1) IoU tradicional
+            iou = iou_bbox(existing.bbox, det.bbox)
+
+            # 2) Contenção (interseção / área da menor caixa)
+            inter_area = _intersection_area(existing.bbox, det.bbox)
+            area_a = _box_area(existing.bbox)
+            area_b = _box_area(det.bbox)
+            min_area = min(area_a, area_b)
+            containment = inter_area / min_area if min_area > 0 else 0.0
+
+            # 3) Distância entre centros relativa ao tamanho médio
+            ca = existing.center
+            cb = det.center
+            dx = ca[0] - cb[0]
+            dy = ca[1] - cb[1]
+            avg_w = ((existing.bbox[2] - existing.bbox[0]) + (det.bbox[2] - det.bbox[0])) / 2.0
+            avg_h = ((existing.bbox[3] - existing.bbox[1]) + (det.bbox[3] - det.bbox[1])) / 2.0
+            if avg_w == 0 or avg_h == 0:
+                continue
+            norm_dist = (abs(dx) / avg_w) + (abs(dy) / avg_h)
+
+            # Considera duplicata se:
+            # - IoU alto
+            # - Ou uma caixa está quase contida na outra (containment alto)
+            # - Ou IoU moderado E centros muito próximos
+            if (
+                iou > iou_threshold
+                or containment > containment_threshold
+                or (iou > 0.3 and norm_dist < 0.5)
+            ):
                 duplicate = True
                 break
+
         if not duplicate:
             kept.append(det)
 
     return kept
 
+
+# =============================================================================
+# SMALL OBJECTS / ADAPTIVE CONFIDENCE
+# =============================================================================
 
 def analyze_small_objects(
     detections: List[Detection],
@@ -301,7 +386,13 @@ def adaptive_confidence_filter(
     base_conf: float,
     small_object_threshold: float = 0.02,
 ) -> List[Detection]:
-    """Filtro adaptativo de confiança."""
+    """
+    Filtro adaptativo:
+    - conf >= 0.60 : aceito
+    - 0.30 <= conf < 0.60 : aceito
+    - 0.20 <= conf < 0.30 : aceito somente se small_object
+    - conf < 0.20 : rejeitado
+    """
     filtered = []
     for det in detections:
         conf = det.confidence
@@ -314,6 +405,10 @@ def adaptive_confidence_filter(
         # below 0.20 discarded
     return filtered
 
+
+# =============================================================================
+# YOLO INFERENCE HELPERS
+# =============================================================================
 
 def run_yolo_detection(
     model: YOLO,
@@ -396,13 +491,27 @@ def run_yolo_detection(
     return detections
 
 
+# =============================================================================
+# FULL PIPELINE
+# =============================================================================
+
 def run_multi_scale_detection(
     model: YOLO,
     image_rgb: np.ndarray,
     config: DetectionConfig,
     use_tracking: bool = True,
 ) -> List[Detection]:
-    """Pipeline completo de detecção multi‑escala."""
+    """
+    Pipeline completo:
+    1) Pré-processamento opcional
+    2) Passada 1 (imagem inteira, tracking ou predict)
+    3) Análise de objetos pequenos
+    4) Smart second pass (tiling) se necessário
+    5) Merge das detecções
+    6) Análise de objetos pequenos novamente
+    7) Filtro adaptativo de confiança
+    8) Limite de max_det
+    """
     if image_rgb is None or image_rgb.size == 0:
         return []
 
@@ -455,8 +564,12 @@ def run_multi_scale_detection(
         except Exception as exc:
             logger.exception("Smart second pass failed: %s", exc)
 
-    # Deduplicação
-    detections = merge_detections(detections, iou_threshold=0.50)
+    # Deduplicação aprimorada
+    detections = merge_detections(
+        detections,
+        iou_threshold=0.40,
+        containment_threshold=0.70,
+    )
 
     # Reanálise de pequenos objetos
     analyze_small_objects(detections, img_shape, config.small_object_threshold)
