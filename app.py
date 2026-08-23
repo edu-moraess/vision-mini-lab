@@ -214,6 +214,34 @@ def load_yolo_model(
 
 
 # =============================================================================
+# UTILITIES
+# =============================================================================
+
+def clamp_roi(
+    roi: Optional[Tuple[int, int, int, int]],
+    shape: Tuple[int, int, int],
+) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Garante que a ROI esteja dentro dos limites da imagem.
+    """
+    if roi is None:
+        return None
+
+    h, w = shape[:2]
+    x1, y1, x2, y2 = roi
+
+    x1 = max(0, min(int(x1), w))
+    y1 = max(0, min(int(y1), h))
+    x2 = max(0, min(int(x2), w))
+    y2 = max(0, min(int(y2), h))
+
+    if x1 >= x2 or y1 >= y2:
+        return None
+
+    return (x1, y1, x2, y2)
+
+
+# =============================================================================
 # DRAWING
 # =============================================================================
 
@@ -458,6 +486,7 @@ def init_state() -> None:
         "selected_track": None,
         "frame_count": 0,
         "last_fps": 0.0,
+        "last_processing_ms": 0.0,
         "processing": False,
     }
 
@@ -486,18 +515,26 @@ with st.sidebar:
 
     conf = st.slider(
         "Confidence",
-        0.10,
+        0.25,
         0.90,
-        0.35,
+        0.50,
         0.05,
     )
 
     iou = st.slider(
         "IoU",
-        0.20,
+        0.30,
         0.80,
-        0.45,
+        0.50,
         0.05,
+    )
+
+    max_det = st.slider(
+        "Máximo de objetos",
+        5,
+        50,
+        20,
+        5,
     )
 
     st.markdown(
@@ -685,6 +722,10 @@ with st.sidebar:
         st.session_state.frame_count = 0
 
         st.session_state.selected_track = None
+
+        st.session_state.last_fps = 0.0
+
+        st.session_state.last_processing_ms = 0.0
 
         if (
             st.session_state.tracker
@@ -887,6 +928,12 @@ if (
 
         img_shape = image.shape
 
+        # Aplica clamp na ROI antes de processar
+        current_roi = clamp_roi(
+            current_roi,
+            image.shape,
+        )
+
         start_time = (
             time.perf_counter()
         )
@@ -896,7 +943,8 @@ if (
         # -------------------------------------------------------------
 
         objects = tracker.update(
-            image
+            image,
+            max_det=max_det,
         )
 
         # -------------------------------------------------------------
@@ -944,6 +992,10 @@ if (
             else 0.0
         )
 
+        st.session_state.last_processing_ms = (
+            elapsed * 1000.0
+        )
+
         st.session_state.frame_count += 1
 
         # -------------------------------------------------------------
@@ -958,11 +1010,11 @@ if (
 
         if len(
             st.session_state.all_centers
-        ) > 5000:
+        ) > 1000:
 
             st.session_state.all_centers = (
                 st.session_state.all_centers[
-                    -5000:
+                    -1000:
                 ]
             )
 
@@ -1163,6 +1215,12 @@ elif (
                     frame_rgb.shape
                 )
 
+                # Aplica clamp na ROI
+                current_roi = clamp_roi(
+                    current_roi,
+                    frame_rgb.shape,
+                )
+
                 start_time = (
                     time.perf_counter()
                 )
@@ -1172,7 +1230,8 @@ elif (
                 # -----------------------------------------------------
 
                 objects = tracker.update(
-                    frame_rgb
+                    frame_rgb,
+                    max_det=max_det,
                 )
 
                 # -----------------------------------------------------
@@ -1224,6 +1283,10 @@ elif (
                     else 0.0
                 )
 
+                st.session_state.last_processing_ms = (
+                    elapsed * 1000.0
+                )
+
                 st.session_state.frame_count = (
                     frame_idx
                 )
@@ -1240,11 +1303,11 @@ elif (
 
                 if len(
                     st.session_state.all_centers
-                ) > 5000:
+                ) > 1000:
 
                     st.session_state.all_centers = (
                         st.session_state.all_centers[
-                            -5000:
+                            -1000:
                         ]
                     )
 
@@ -1399,10 +1462,16 @@ with col_info:
 
     m3, m4 = st.columns(2)
 
-    m3.metric(
-        "FPS",
-        f"{st.session_state.last_fps:.1f}",
-    )
+    if input_type == "Video":
+        m3.metric(
+            "FPS",
+            f"{st.session_state.last_fps:.1f}",
+        )
+    else:
+        m3.metric(
+            "Processamento",
+            f"{st.session_state.last_processing_ms:.0f} ms",
+        )
 
     m4.metric(
         "Inside ROI",
@@ -1783,20 +1852,33 @@ if (
         and img_shape is not None
     ):
 
-        fig7 = movement_density_heatmap(
-            st.session_state.all_centers,
-            img_shape,
-        )
+        try:
 
-        st.plotly_chart(
-            fig7,
-            width="stretch",
-            config=MODEBAR_CONFIG,
-        )
+            fig7 = movement_density_heatmap(
+                st.session_state.all_centers,
+                img_shape,
+            )
 
-        st.caption(
-            "Densidade espacial das trajetórias."
-        )
+            st.plotly_chart(
+                fig7,
+                width="stretch",
+                config=MODEBAR_CONFIG,
+            )
+
+            st.caption(
+                "Densidade espacial das trajetórias."
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "Movement density failed: %s",
+                exc,
+            )
+
+            st.info(
+                "Não foi possível gerar o gráfico de densidade."
+            )
 
 else:
 
