@@ -75,7 +75,7 @@ class Tracker:
                 verbose=False,
             )
         except Exception as exc:
-            logger.exception("Tracking failed: %s", exp if False else exc)
+            logger.exception("Tracking failed: %s", exc)
             return []
 
         tracked: List[TrackedObject] = []
