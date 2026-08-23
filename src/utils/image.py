@@ -40,14 +40,11 @@ def load_image_from_bytes(data: bytes) -> Optional[np.ndarray]:
         return None
 
     try:
-        # Correct EXIF orientation when present
         pil_img = ImageOps.exif_transpose(pil_img)
     except Exception:
-        # EXIF missing or malformed – continue without correction
         pass
 
     try:
-        # Normalize mode
         if pil_img.mode == "RGBA":
             background = Image.new("RGB", pil_img.size, (0, 0, 0))
             background.paste(pil_img, mask=pil_img.split()[3])
@@ -89,11 +86,15 @@ def load_image_from_path(path: str) -> Optional[np.ndarray]:
 
 def to_bgr(rgb: np.ndarray) -> np.ndarray:
     """Convert RGB to BGR for OpenCV operations."""
+    if rgb is None or rgb.size == 0:
+        return rgb
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
 def to_rgb(bgr: np.ndarray) -> np.ndarray:
     """Convert BGR to RGB."""
+    if bgr is None or bgr.size == 0:
+        return bgr
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
@@ -105,6 +106,9 @@ def resize_keep_aspect(
     Resize image so that the longest side equals max_side.
     Returns resized image and scale factor (new / original).
     """
+    if image is None or image.size == 0:
+        return image, 1.0
+
     h, w = image.shape[:2]
     scale = 1.0
     if max(h, w) > max_side:
@@ -122,5 +126,7 @@ def validate_image_array(arr: np.ndarray) -> bool:
     if arr.ndim != 3 or arr.shape[2] != 3:
         return False
     if arr.dtype != np.uint8:
+        return False
+    if arr.size == 0:
         return False
     return True
