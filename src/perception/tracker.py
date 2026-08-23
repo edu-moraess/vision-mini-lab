@@ -1,9 +1,14 @@
 """
-Object detection + tracking using Ultralytics.
+VISION MINI LAB
+Detection + Tracking Engine
 
-Detection is always preserved.
-Tracking is optional: if Ultralytics cannot assign an ID,
-the detected object is still returned with track_id=-1.
+Design goals:
+- YOLO detection is always preserved.
+- Tracking is optional.
+- Detection confidence filtering.
+- Maximum detections per frame.
+- Temporal confirmation to reduce flickering.
+- Stable tracking IDs when available.
 """
 
 from __future__ import annotations
@@ -33,13 +38,24 @@ class TrackedObject:
     direction: str = "STATIONARY"
     state: str = "STATIONARY"
 
+    # Temporal confidence
+    consecutive_frames: int = 1
+    confirmed: bool = False
+
 
 @dataclass
 class TrackHistory:
-    points: List[Tuple[float, float]] = field(default_factory=list)
+    points: List[Tuple[float, float]] = field(
+        default_factory=list
+    )
+
     max_len: int = 60
 
-    def add(self, center: Tuple[float, float]) -> None:
+    def add(
+        self,
+        center: Tuple[float, float],
+    ) -> None:
+
         self.points.append(center)
 
         if len(self.points) > self.max_len:
@@ -47,53 +63,79 @@ class TrackHistory:
 
 
 class Tracker:
-    """
-    YOLO detection with optional persistent tracking.
-
-    Important:
-    - Every YOLO detection is returned.
-    - A missing tracking ID never removes a detection.
-    """
 
     def __init__(
         self,
         model: YOLO,
-        conf: float = 0.35,
-        iou: float = 0.45,
+        conf: float = 0.50,
+        iou: float = 0.50,
+        max_det: int = 20,
+        confirmation_frames: int = 2,
         history_len: int = 60,
     ):
+
         self.model = model
-        self.conf = conf
-        self.iou = iou
-        self.history_len = history_len
 
-        self.histories: Dict[int, TrackHistory] = {}
-        self._prev_centers: Dict[int, Tuple[float, float]] = {}
+        self.conf = float(conf)
+        self.iou = float(iou)
 
-        # Synthetic IDs for detections without tracker IDs.
+        self.max_det = int(max_det)
+
+        self.confirmation_frames = int(
+            confirmation_frames
+        )
+
+        self.history_len = int(
+            history_len
+        )
+
+        self.histories: Dict[
+            int,
+            TrackHistory,
+        ] = {}
+
+        self._prev_centers: Dict[
+            int,
+            Tuple[float, float],
+        ] = {}
+
+        self._confirmation_counts: Dict[
+            int,
+            int,
+        ] = {}
+
         self._next_detection_id = -1
 
-    def update(self, image_rgb: np.ndarray) -> List[TrackedObject]:
-        """
-        Run YOLO tracking.
+    # -------------------------------------------------------------------------
+    # UPDATE
+    # -------------------------------------------------------------------------
 
-        If tracking IDs exist, they are preserved.
-        If tracking IDs do not exist, detections are still returned.
-        """
+    def update(
+        self,
+        image_rgb: np.ndarray,
+    ) -> List[TrackedObject]:
 
         try:
+
             results = self.model.track(
                 source=image_rgb,
                 conf=self.conf,
                 iou=self.iou,
+                max_det=self.max_det,
                 persist=True,
                 verbose=False,
             )
-        except Exception as exc:
-            logger.exception("Tracking failed: %s", exc)
 
-            # Fallback: plain detection.
-            return self._detect_without_tracking(image_rgb)
+        except Exception as exc:
+
+            logger.exception(
+                "Tracking failed: %s",
+                exc,
+            )
+
+            return self._detect_without_tracking(
+                image_rgb
+            )
 
         if not results:
             return []
@@ -104,105 +146,230 @@ class Tracker:
             return []
 
         boxes = result.boxes
+
         names = result.names or {}
 
-        tracked: List[TrackedObject] = []
-
-        has_ids = boxes.id is not None
+        tracked: List[
+            TrackedObject
+        ] = []
 
         ids = None
-        if has_ids:
-            ids = boxes.id.cpu().numpy().astype(int)
+
+        if boxes.id is not None:
+
+            ids = (
+                boxes.id
+                .cpu()
+                .numpy()
+                .astype(int)
+            )
 
         current_ids = set()
 
-        for i in range(len(boxes)):
+        for i in range(
+            len(boxes)
+        ):
+
             try:
-                cls_id = int(boxes.cls[i].item())
-                confidence = float(boxes.conf[i].item())
 
-                xyxy = boxes.xyxy[i].cpu().numpy()
+                cls_id = int(
+                    boxes.cls[i].item()
+                )
 
-                x1, y1, x2, y2 = map(float, xyxy)
+                confidence = float(
+                    boxes.conf[i].item()
+                )
 
-                cx = (x1 + x2) / 2.0
-                cy = (y1 + y2) / 2.0
+                if confidence < self.conf:
+                    continue
+
+                xyxy = (
+                    boxes.xyxy[i]
+                    .cpu()
+                    .numpy()
+                )
+
+                x1, y1, x2, y2 = map(
+                    float,
+                    xyxy,
+                )
+
+                cx = (
+                    x1 + x2
+                ) / 2.0
+
+                cy = (
+                    y1 + y2
+                ) / 2.0
 
                 class_name = names.get(
                     cls_id,
                     f"class_{cls_id}",
                 )
 
-                # Real tracker ID when available.
+                # -------------------------------------------------------------
+                # ID
+                # -------------------------------------------------------------
+
                 if ids is not None:
-                    track_id = int(ids[i])
+
+                    track_id = int(
+                        ids[i]
+                    )
+
                 else:
-                    # Negative IDs mean detection without persistent tracking.
-                    track_id = self._next_detection_id
+
+                    track_id = (
+                        self._next_detection_id
+                    )
+
                     self._next_detection_id -= 1
+
+                # -------------------------------------------------------------
+                # Temporal confirmation
+                # -------------------------------------------------------------
+
+                if track_id > 0:
+
+                    count = (
+                        self._confirmation_counts.get(
+                            track_id,
+                            0,
+                        )
+                        + 1
+                    )
+
+                    self._confirmation_counts[
+                        track_id
+                    ] = count
+
+                    confirmed = (
+                        count
+                        >= self.confirmation_frames
+                    )
+
+                else:
+
+                    # Detection-only objects are
+                    # immediately visible.
+                    confirmed = True
+
+                # -------------------------------------------------------------
+                # History
+                # -------------------------------------------------------------
+
+                if track_id > 0:
+
+                    current_ids.add(
+                        track_id
+                    )
+
+                    if (
+                        track_id
+                        not in self.histories
+                    ):
+
+                        self.histories[
+                            track_id
+                        ] = TrackHistory(
+                            max_len=self.history_len
+                        )
+
+                    self.histories[
+                        track_id
+                    ].add(
+                        (
+                            cx,
+                            cy,
+                        )
+                    )
 
                 obj = TrackedObject(
                     track_id=track_id,
                     class_id=cls_id,
                     class_name=class_name,
                     confidence=confidence,
-                    bbox=(x1, y1, x2, y2),
-                    center=(cx, cy),
+                    bbox=(
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                    ),
+                    center=(
+                        cx,
+                        cy,
+                    ),
+                    consecutive_frames=(
+                        self._confirmation_counts.get(
+                            track_id,
+                            1,
+                        )
+                    ),
+                    confirmed=confirmed,
                 )
 
                 tracked.append(obj)
 
-                if track_id > 0:
-                    current_ids.add(track_id)
-
-                    if track_id not in self.histories:
-                        self.histories[track_id] = TrackHistory(
-                            max_len=self.history_len
-                        )
-
-                    self.histories[track_id].add(
-                        (cx, cy)
-                    )
-
             except Exception:
-                logger.exception(
-                    "Failed to parse detection."
-                )
-                continue
 
-        # Remove histories for tracks no longer visible.
-        lost = [
+                logger.exception(
+                    "Failed to parse detection"
+                )
+
+        # ---------------------------------------------------------------------
+        # Cleanup
+        # ---------------------------------------------------------------------
+
+        lost_ids = [
             track_id
             for track_id in self.histories
             if track_id not in current_ids
         ]
 
-        for track_id in lost:
-            del self.histories[track_id]
-            self._prev_centers.pop(track_id, None)
+        for track_id in lost_ids:
+
+            del self.histories[
+                track_id
+            ]
+
+            self._prev_centers.pop(
+                track_id,
+                None,
+            )
+
+            self._confirmation_counts.pop(
+                track_id,
+                None,
+            )
 
         return tracked
+
+    # -------------------------------------------------------------------------
+    # DETECTION FALLBACK
+    # -------------------------------------------------------------------------
 
     def _detect_without_tracking(
         self,
         image_rgb: np.ndarray,
     ) -> List[TrackedObject]:
-        """
-        Emergency fallback using YOLO detection only.
-        """
 
         try:
+
             results = self.model.predict(
                 source=image_rgb,
                 conf=self.conf,
                 iou=self.iou,
+                max_det=self.max_det,
                 verbose=False,
             )
+
         except Exception as exc:
+
             logger.exception(
                 "Detection fallback failed: %s",
                 exc,
             )
+
             return []
 
         if not results:
@@ -214,70 +381,153 @@ class Tracker:
             return []
 
         boxes = result.boxes
+
         names = result.names or {}
 
         detections = []
 
-        for i in range(len(boxes)):
+        for i in range(
+            len(boxes)
+        ):
+
             try:
-                cls_id = int(boxes.cls[i].item())
-                confidence = float(boxes.conf[i].item())
 
-                xyxy = boxes.xyxy[i].cpu().numpy()
+                cls_id = int(
+                    boxes.cls[i].item()
+                )
 
-                x1, y1, x2, y2 = map(float, xyxy)
+                confidence = float(
+                    boxes.conf[i].item()
+                )
 
-                cx = (x1 + x2) / 2.0
-                cy = (y1 + y2) / 2.0
+                if confidence < self.conf:
+                    continue
+
+                xyxy = (
+                    boxes.xyxy[i]
+                    .cpu()
+                    .numpy()
+                )
+
+                x1, y1, x2, y2 = map(
+                    float,
+                    xyxy,
+                )
+
+                cx = (
+                    x1 + x2
+                ) / 2.0
+
+                cy = (
+                    y1 + y2
+                ) / 2.0
 
                 detections.append(
                     TrackedObject(
-                        track_id=self._next_detection_id,
+                        track_id=(
+                            self._next_detection_id
+                        ),
                         class_id=cls_id,
                         class_name=names.get(
                             cls_id,
                             f"class_{cls_id}",
                         ),
                         confidence=confidence,
-                        bbox=(x1, y1, x2, y2),
-                        center=(cx, cy),
+                        bbox=(
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                        ),
+                        center=(
+                            cx,
+                            cy,
+                        ),
+                        confirmed=True,
                     )
                 )
 
                 self._next_detection_id -= 1
 
             except Exception:
-                continue
+
+                logger.exception(
+                    "Fallback detection parsing failed"
+                )
 
         return detections
 
-    def get_trajectory(
-        self,
-        track_id: int,
-    ) -> List[Tuple[float, float]]:
-
-        hist = self.histories.get(track_id)
-
-        if hist is None:
-            return []
-
-        return list(hist.points)
+    # -------------------------------------------------------------------------
+    # CONFIG
+    # -------------------------------------------------------------------------
 
     def set_thresholds(
         self,
         conf: float,
         iou: float,
+        max_det: int | None = None,
     ) -> None:
 
         self.conf = float(
-            np.clip(conf, 0.05, 0.95)
+            np.clip(
+                conf,
+                0.05,
+                0.95,
+            )
         )
 
         self.iou = float(
-            np.clip(iou, 0.1, 0.9)
+            np.clip(
+                iou,
+                0.10,
+                0.90,
+            )
         )
 
+        if max_det is not None:
+
+            self.max_det = int(
+                np.clip(
+                    max_det,
+                    1,
+                    100,
+                )
+            )
+
+    # -------------------------------------------------------------------------
+    # TRAJECTORY
+    # -------------------------------------------------------------------------
+
+    def get_trajectory(
+        self,
+        track_id: int,
+    ) -> List[
+        Tuple[float, float]
+    ]:
+
+        history = (
+            self.histories.get(
+                track_id
+            )
+        )
+
+        if history is None:
+            return []
+
+        return list(
+            history.points
+        )
+
+    # -------------------------------------------------------------------------
+    # RESET
+    # -------------------------------------------------------------------------
+
     def reset(self) -> None:
+
         self.histories.clear()
+
         self._prev_centers.clear()
+
+        self._confirmation_counts.clear()
+
         self._next_detection_id = -1
