@@ -59,8 +59,8 @@ class EventEngine:
         self._prev_side: Dict[int, int] = {}
 
         # Geometry (set externally)
-        self.roi: Optional[Tuple[int, int, int, int]] = None  # x1,y1,x2,y2
-        self.line: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None  # (p1, p2)
+        self.roi: Optional[Tuple[int, int, int, int]] = None
+        self.line: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None
 
     def set_roi(self, roi: Optional[Tuple[int, int, int, int]]) -> None:
         self.roi = roi
@@ -82,14 +82,10 @@ class EventEngine:
         return x1 <= cx <= x2 and y1 <= cy <= y2
 
     def _side_of_line(self, cx: float, cy: float) -> int:
-        """
-        Return +1 or -1 depending on which side of the line the point is.
-        Uses cross product sign.
-        """
+        """Return +1 or -1 depending on which side of the line the point is."""
         if self.line is None:
             return 0
         (x1, y1), (x2, y2) = self.line
-        # (p2 - p1) × (p - p1)
         cross = (x2 - x1) * (cy - y1) - (y2 - y1) * (cx - x1)
         if cross >= 0:
             return 1
@@ -98,12 +94,14 @@ class EventEngine:
     def _emit(self, event: Event) -> None:
         self.events.append(event)
         if len(self.events) > self.max_events:
-            self.events = self.events[-self.max_events :]
+            self.events = self.events[-self.max_events:]
 
     def update(self, objects: List[TrackedObject], frame_time: Optional[float] = None) -> List[Event]:
         """
         Process current frame objects and emit new events.
         Returns only the newly generated events this call.
+        Ignores detection-only objects (track_id <= 0) for event generation
+        to avoid spam from temporary detections.
         """
         now = frame_time if frame_time is not None else time.time()
         new_events: List[Event] = []
@@ -113,6 +111,10 @@ class EventEngine:
             tid = obj.track_id
             current_ids.add(tid)
             cx, cy = obj.center
+
+            # Skip event generation for detection-only objects
+            if tid <= 0:
+                continue
 
             # --- ROI enter / exit ---
             if self.roi is not None:
@@ -169,7 +171,6 @@ class EventEngine:
                 if prev_side is not None and side != 0 and prev_side != 0 and side != prev_side:
                     last = self._last_line_cross.get(tid, 0.0)
                     if (now - last) >= self.line_debounce_sec:
-                        # determine direction roughly
                         direction = obj.direction if obj.direction != "STATIONARY" else "UNKNOWN"
                         ev = Event(
                             timestamp=now,
@@ -183,7 +184,7 @@ class EventEngine:
                         self._last_line_cross[tid] = now
                 self._prev_side[tid] = side
 
-        # prune lost tracks
+        # Prune lost tracks
         for store in (self._inside_roi, self._was_moving, self._prev_side):
             lost = [k for k in store if k not in current_ids]
             for k in lost:
