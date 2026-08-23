@@ -3,8 +3,8 @@ VISION MINI LAB
 Real-Time Visual Intelligence
 
 Computer vision laboratory:
-- YOLO object detection
-- Optional persistent tracking
+- YOLO object detection with multi-scale pipeline
+- Optional persistent tracking with stable ID colors
 - Motion analysis
 - Event detection
 - Relative thermal intensity
@@ -28,6 +28,7 @@ from ultralytics import YOLO
 
 from src.analytics.analytics import (
     MODEBAR_CONFIG,
+    apply_chart_theme,
     confidence_chart,
     event_timeline_chart,
     motion_chart,
@@ -39,7 +40,7 @@ from src.analytics.analytics import (
 from src.events.events import EventEngine
 from src.motion.motion import MotionAnalyzer
 from src.perception.tracker import Tracker, TrackedObject
-from src.perception.detector import DetectionConfig
+from src.perception.detector import DetectionConfig, load_model, get_id_color
 from src.thermal.thermal import (
     compute_roi_stats,
     process_thermal,
@@ -59,7 +60,7 @@ logger = logging.getLogger("vision-mini-lab")
 
 
 # =============================================================================
-# PAGE
+# PAGE CONFIG
 # =============================================================================
 
 st.set_page_config(
@@ -77,14 +78,9 @@ st.set_page_config(
 st.markdown(
     """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
 
-@import url(
-    'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap'
-);
-
-html,
-body,
-[class*="css"] {
+html, body, [class*="css"] {
     font-family: 'Inter', system-ui, sans-serif;
 }
 
@@ -93,10 +89,7 @@ body,
     color: #d0d0d8;
 }
 
-h1,
-h2,
-h3,
-h4 {
+h1, h2, h3, h4 {
     font-family: 'JetBrains Mono', monospace !important;
     font-weight: 500 !important;
     letter-spacing: 0.04em;
@@ -181,6 +174,17 @@ div[data-testid="stMetric"] label {
     font-size: 0.75rem;
 }
 
+.insight-pill {
+    display: inline-block;
+    background-color: #1a1a22;
+    border: 1px solid #2a2a34;
+    border-radius: 3px;
+    padding: 0.25rem 0.6rem;
+    margin: 0.15rem 0.3rem 0.15rem 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72rem;
+    color: #8a8a98;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -188,19 +192,12 @@ div[data-testid="stMetric"] label {
 
 
 # =============================================================================
-# MODEL
+# MODEL LOADING (cached)
 # =============================================================================
 
 @st.cache_resource(show_spinner=False)
-def load_yolo_model(model_name: str = "yolov8s.pt") -> Optional[YOLO]:
-    try:
-        logger.info("Loading YOLO model: %s", model_name)
-        model = YOLO(model_name)
-        logger.info("YOLO model loaded successfully")
-        return model
-    except Exception as exc:
-        logger.exception("YOLO model loading failed: %s", exc)
-        return None
+def load_yolo_model(model_name: str = "yolo11s.pt") -> Optional[YOLO]:
+    return load_model(model_name)
 
 
 # =============================================================================
@@ -211,9 +208,7 @@ def clamp_roi(
     roi: Optional[Tuple[int, int, int, int]],
     shape: Tuple[int, int, int],
 ) -> Optional[Tuple[int, int, int, int]]:
-    """
-    Garante que a ROI esteja dentro dos limites da imagem.
-    """
+    """Ensure ROI stays within image bounds."""
     if roi is None:
         return None
 
@@ -231,6 +226,11 @@ def clamp_roi(
     return (x1, y1, x2, y2)
 
 
+def safe_div(a: float, b: float, default: float = 0.0) -> float:
+    """Safe division with default fallback."""
+    return a / b if b != 0 else default
+
+
 # =============================================================================
 # DRAWING
 # =============================================================================
@@ -244,63 +244,40 @@ def draw_overlays(
 ) -> np.ndarray:
     """
     Draw clean computer-vision overlays.
-
-    Important:
-    Detection objects are rendered even when
-    no tracking ID is available.
+    Detection objects are rendered even when no tracking ID is available.
     """
+    if image_rgb is None or image_rgb.size == 0:
+        return image_rgb
 
     out = image_rgb.copy()
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # -------------------------------------------------------------------------
     # ROI
-    # -------------------------------------------------------------------------
     if roi is not None:
         x1, y1, x2, y2 = roi
         cv2.rectangle(out, (x1, y1), (x2, y2), (80, 140, 220), 1, cv2.LINE_AA)
         cv2.putText(out, "ROI", (x1 + 5, y1 + 18), font, 0.45, (100, 160, 230), 1, cv2.LINE_AA)
 
-    # -------------------------------------------------------------------------
     # Virtual line
-    # -------------------------------------------------------------------------
     if line is not None:
         (lx1, ly1), (lx2, ly2) = line
         cv2.line(out, (lx1, ly1), (lx2, ly2), (220, 160, 60), 2, cv2.LINE_AA)
 
-    # -------------------------------------------------------------------------
     # Objects
-    # -------------------------------------------------------------------------
     for obj in objects:
         x1, y1, x2, y2 = map(int, obj.bbox)
-
-        # Tracked object
-        if obj.track_id > 0:
-            box_color = (90, 180, 255)
-            identifier = f"#{obj.track_id}"
-        else:
-            box_color = (160, 160, 170)
-            identifier = "DET"
+        box_color = obj.id_color
 
         # Bounding box
         cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2, cv2.LINE_AA)
 
-        # Label
-        label = (
-            f"{obj.class_name.upper()} "
-            f"{identifier} "
-            f"{obj.confidence:.0%}"
-        )
+        # Label: CLASS · ID/DET · CONFIDENCE
+        label = f"{obj.class_name.upper()} · {obj.display_id} · {obj.confidence:.0%}"
 
-        if (
-            show_motion
-            and obj.track_id > 0
-            and obj.state == "MOVING"
-        ):
-            label += f"  {obj.direction}  {obj.speed:.1f}px/f"
+        if show_motion and obj.track_id > 0 and obj.state == "MOVING":
+            label += f" · {obj.direction} · {obj.speed:.1f}px/f"
 
         (text_width, text_height), _ = cv2.getTextSize(label, font, 0.48, 1)
-
         label_y = max(y1, text_height + 10)
 
         # Label background
@@ -327,19 +304,18 @@ def draw_overlays(
     return out
 
 
-# =============================================================================
-# TRAJECTORIES
-# =============================================================================
-
 def draw_trajectories(
     image_rgb: np.ndarray,
     tracker: Tracker,
     objects: List[TrackedObject],
 ) -> np.ndarray:
+    """Draw trajectory polylines for tracked objects only."""
+    if image_rgb is None or image_rgb.size == 0:
+        return image_rgb
+
     out = image_rgb.copy()
 
     for obj in objects:
-        # Do not draw trajectories for temporary detection-only IDs.
         if obj.track_id <= 0:
             continue
 
@@ -348,7 +324,8 @@ def draw_trajectories(
             continue
 
         points_i = np.array(points, dtype=np.int32)
-        cv2.polylines(out, [points_i], False, (60, 120, 200), 1, cv2.LINE_AA)
+        color = obj.id_color
+        cv2.polylines(out, [points_i], False, color, 1, cv2.LINE_AA)
 
     return out
 
@@ -370,8 +347,8 @@ def init_state() -> None:
         "processing": False,
         "perception_mode": "BALANCED",
         "perception_config": {
-            "conf": 0.25,
-            "iou": 0.50,
+            "conf": 0.30,
+            "iou": 0.45,
             "max_det": 50,
             "imgsz": 960,
             "tracking_conf": 0.40,
@@ -397,13 +374,11 @@ with st.sidebar:
     st.markdown("### CONTROLS")
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # Perception Mode
-    # -------------------------------------------------------------------------
     st.markdown("#### PERCEPTION MODE")
 
     perception_mode = st.selectbox(
-        "Modo de Percepção",
+        "Perception Mode",
         ["FAST", "BALANCED", "ACCURATE"],
         index=1,
         label_visibility="collapsed",
@@ -421,8 +396,8 @@ with st.sidebar:
             "augment": False,
         },
         "BALANCED": {
-            "conf": 0.25,
-            "iou": 0.50,
+            "conf": 0.30,
+            "iou": 0.45,
             "max_det": 50,
             "imgsz": 960,
             "tracking_conf": 0.40,
@@ -431,8 +406,8 @@ with st.sidebar:
             "augment": False,
         },
         "ACCURATE": {
-            "conf": 0.20,
-            "iou": 0.50,
+            "conf": 0.25,
+            "iou": 0.40,
             "max_det": 100,
             "imgsz": 1280,
             "tracking_conf": 0.35,
@@ -442,22 +417,19 @@ with st.sidebar:
         },
     }
 
-    if (
-        "perception_mode" not in st.session_state
-        or st.session_state.perception_mode != perception_mode
-    ):
+    # Only update config when mode actually changes (prevents unnecessary reruns)
+    if st.session_state.get("perception_mode") != perception_mode:
         st.session_state.perception_mode = perception_mode
         st.session_state.perception_config = mode_defaults[perception_mode].copy()
+        st.rerun()
 
-    # -------------------------------------------------------------------------
     # Advanced Settings
-    # -------------------------------------------------------------------------
     with st.expander("ADVANCED PERCEPTION", expanded=False):
-        adv = st.session_state.perception_config
+        adv = st.session_state.perception_config.copy()
 
         adv["conf"] = st.slider("Detection Confidence", 0.15, 0.90, adv["conf"], 0.05)
-        adv["iou"] = st.slider("IoU", 0.30, 0.80, adv["iou"], 0.05)
-        adv["max_det"] = st.slider("Max Objects", 10, 100, adv["max_det"], 10)
+        adv["iou"] = st.slider("IoU Threshold", 0.20, 0.80, adv["iou"], 0.05)
+        adv["max_det"] = st.slider("Maximum Objects", 10, 100, adv["max_det"], 10)
         adv["imgsz"] = st.selectbox(
             "Inference Size",
             [640, 768, 960, 1280],
@@ -478,13 +450,11 @@ with st.sidebar:
 
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # Model selection
-    # -------------------------------------------------------------------------
-    st.markdown("#### MODELO")
+    st.markdown("#### MODEL")
 
     model_choice = st.selectbox(
-        "Modelo YOLO",
+        "YOLO Model",
         ["Fast (yolo11n.pt)", "Balanced (yolo11s.pt)", "Accurate (yolo11m.pt)"],
         index=1,
         label_visibility="collapsed",
@@ -499,9 +469,7 @@ with st.sidebar:
 
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # View / Thermal settings
-    # -------------------------------------------------------------------------
     st.markdown("#### VIEW")
 
     view_mode = st.radio(
@@ -517,9 +485,7 @@ with st.sidebar:
 
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # Overlays
-    # -------------------------------------------------------------------------
     st.markdown("#### OVERLAYS")
 
     show_tracks = st.checkbox("Trajectories", value=True)
@@ -527,9 +493,7 @@ with st.sidebar:
 
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # ROI
-    # -------------------------------------------------------------------------
     st.markdown("#### ROI")
 
     enable_roi = st.checkbox("Enable ROI", value=False)
@@ -545,9 +509,7 @@ with st.sidebar:
 
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # Line crossing
-    # -------------------------------------------------------------------------
     st.markdown("#### LINE CROSSING")
 
     enable_line = st.checkbox("Enable Line", value=False)
@@ -563,9 +525,7 @@ with st.sidebar:
 
     st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
     # Reset
-    # -------------------------------------------------------------------------
     if st.button("RESET STATE", use_container_width=True):
         st.session_state.motion.reset()
         st.session_state.events.clear()
@@ -596,7 +556,7 @@ st.markdown('<div class="sub-title">REAL-TIME VISUAL INTELLIGENCE</div>', unsafe
 model = load_yolo_model(model_name)
 
 if model is None:
-    st.error("YOLO não pôde ser carregado. Verifique a instalação do Ultralytics.")
+    st.error("YOLO model could not be loaded. Check your Ultralytics installation.")
     st.stop()
 
 
@@ -618,6 +578,8 @@ det_cfg = DetectionConfig(
     enable_adaptive_conf=True,
     enhance_low_light=True,
     max_tiles=4,
+    temporal_consistency_frames=3,
+    temporal_consistency_boost=0.05,
 )
 
 if st.session_state.tracker is None:
@@ -689,82 +651,69 @@ img_shape = None
 # =============================================================================
 
 if uploaded is not None and input_type == "Image":
-    data = uploaded.getvalue()
-    image = load_image_from_bytes(data)
+    try:
+        data = uploaded.getvalue()
+        image = load_image_from_bytes(data)
 
-    if image is None:
-        st.error("Não foi possível carregar esta imagem.")
-    else:
-        image, _ = resize_keep_aspect(image, max_side=1280)
-        img_shape = image.shape
+        if image is None:
+            st.error("Could not load this image. Unsupported format or corrupted file.")
+        else:
+            image, _ = resize_keep_aspect(image, max_side=1280)
+            img_shape = image.shape
+            current_roi = clamp_roi(current_roi, image.shape)
 
-        # Aplica clamp na ROI antes de processar
-        current_roi = clamp_roi(current_roi, image.shape)
+            start_time = time.perf_counter()
 
-        start_time = time.perf_counter()
+            # YOLO + TRACKING
+            objects = tracker.update(image, is_video=False)
 
-        # -------------------------------------------------------------
-        # YOLO + TRACKING
-        # -------------------------------------------------------------
-        objects = tracker.update(image)
+            # MOTION
+            try:
+                objects = motion.update(objects)
+            except Exception as exc:
+                logger.exception("Motion analysis failed: %s", exc)
 
-        # -------------------------------------------------------------
-        # MOTION
-        # -------------------------------------------------------------
-        try:
-            objects = motion.update(objects)
-        except Exception as exc:
-            logger.exception("Motion analysis failed: %s", exc)
+            # EVENTS
+            try:
+                events.update(objects)
+            except Exception as exc:
+                logger.exception("Event engine failed: %s", exc)
 
-        # -------------------------------------------------------------
-        # EVENTS
-        # -------------------------------------------------------------
-        try:
-            events.update(objects)
-        except Exception as exc:
-            logger.exception("Event engine failed: %s", exc)
+            elapsed = time.perf_counter() - start_time
+            st.session_state.last_fps = 1.0 / elapsed if elapsed > 0 else 0.0
+            st.session_state.last_processing_ms = elapsed * 1000.0
+            st.session_state.frame_count += 1
 
-        elapsed = time.perf_counter() - start_time
-        st.session_state.last_fps = 1.0 / elapsed if elapsed > 0 else 0.0
-        st.session_state.last_processing_ms = elapsed * 1000.0
-        st.session_state.frame_count += 1
+            # CENTERS (limit to 1000)
+            for obj in objects:
+                st.session_state.all_centers.append(obj.center)
+            if len(st.session_state.all_centers) > 1000:
+                st.session_state.all_centers = st.session_state.all_centers[-1000:]
 
-        # -------------------------------------------------------------
-        # CENTERS
-        # -------------------------------------------------------------
-        for obj in objects:
-            st.session_state.all_centers.append(obj.center)
+            # THERMAL
+            mode_map = {"RGB": "rgb", "THERMAL": "thermal", "OVERLAY": "overlay"}
+            display_image, intensity_map, thermal_stats = process_thermal(
+                image,
+                mode=mode_map[view_mode],
+                colormap=colormap,
+                opacity=thermal_opacity,
+            )
 
-        if len(st.session_state.all_centers) > 1000:
-            st.session_state.all_centers = st.session_state.all_centers[-1000:]
+            # TRAJECTORIES
+            if show_tracks:
+                display_image = draw_trajectories(display_image, tracker, objects)
 
-        # -------------------------------------------------------------
-        # THERMAL
-        # -------------------------------------------------------------
-        mode_map = {"RGB": "rgb", "THERMAL": "thermal", "OVERLAY": "overlay"}
-        display_image, intensity_map, thermal_stats = process_thermal(
-            image,
-            mode=mode_map[view_mode],
-            colormap=colormap,
-            opacity=thermal_opacity,
-        )
-
-        # -------------------------------------------------------------
-        # TRAJECTORIES
-        # -------------------------------------------------------------
-        if show_tracks:
-            display_image = draw_trajectories(display_image, tracker, objects)
-
-        # -------------------------------------------------------------
-        # BOUNDING BOXES
-        # -------------------------------------------------------------
-        display_image = draw_overlays(
-            display_image,
-            objects,
-            current_roi,
-            current_line,
-            show_motion_label,
-        )
+            # BOUNDING BOXES
+            display_image = draw_overlays(
+                display_image,
+                objects,
+                current_roi,
+                current_line,
+                show_motion_label,
+            )
+    except Exception as exc:
+        logger.exception("Image processing failed: %s", exc)
+        st.error(f"Image processing error: {exc}")
 
 
 # =============================================================================
@@ -783,7 +732,7 @@ elif uploaded is not None and input_type == "Video":
         cap = cv2.VideoCapture(tmp_path)
 
         if not cap.isOpened():
-            st.error("Não foi possível abrir este vídeo.")
+            st.error("Could not open this video.")
         else:
             fps_video = cap.get(cv2.CAP_PROP_FPS) or 25.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -804,18 +753,16 @@ elif uploaded is not None and input_type == "Video":
             ret, frame_bgr = cap.read()
 
             if not ret:
-                st.error("Não foi possível ler este frame.")
+                st.error("Could not read this frame.")
             else:
                 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                 frame_rgb, _ = resize_keep_aspect(frame_rgb, max_side=1280)
                 img_shape = frame_rgb.shape
-
-                # Aplica clamp na ROI
                 current_roi = clamp_roi(current_roi, frame_rgb.shape)
 
                 start_time = time.perf_counter()
 
-                objects = tracker.update(frame_rgb)
+                objects = tracker.update(frame_rgb, is_video=True)
 
                 try:
                     objects = motion.update(objects)
@@ -834,7 +781,6 @@ elif uploaded is not None and input_type == "Video":
 
                 for obj in objects:
                     st.session_state.all_centers.append(obj.center)
-
                 if len(st.session_state.all_centers) > 1000:
                     st.session_state.all_centers = st.session_state.all_centers[-1000:]
 
@@ -857,11 +803,11 @@ elif uploaded is not None and input_type == "Video":
                     show_motion_label,
                 )
 
-            cap.release()
+        cap.release()
 
     except Exception as exc:
         logger.exception("Video processing failed: %s", exc)
-        st.error(f"Erro no processamento do vídeo: {exc}")
+        st.error(f"Video processing error: {exc}")
     finally:
         if tmp_path is not None:
             try:
@@ -871,7 +817,7 @@ elif uploaded is not None and input_type == "Video":
 
 
 # =============================================================================
-# LIVE VIEW
+# LIVE VIEW + OBJECT INTELLIGENCE
 # =============================================================================
 
 col_view, col_info = st.columns([1.6, 1.0])
@@ -883,103 +829,93 @@ with col_view:
         st.image(display_image, width="stretch", channels="RGB")
     else:
         st.markdown(
-            """
-            <div class="info-box">
-            Aguardando entrada de imagem ou vídeo.
-            </div>
-            """,
+            '<div class="info-box">Waiting for image or video input.</div>',
             unsafe_allow_html=True,
         )
 
-
-# =============================================================================
-# OBJECT INTELLIGENCE
-# =============================================================================
 
 with col_info:
     st.markdown("### OBJECT INTELLIGENCE")
 
     active_objects = len(objects)
-    tracked_objects = len(tracker.histories)
+    tracked_objects = sum(1 for o in objects if o.track_id > 0)
 
     try:
         inside_roi = events.count_inside_roi(objects)
     except Exception:
         inside_roi = 0
 
-    m1, m2 = st.columns(2)
+    # Top metrics cards
+    m1, m2, m3 = st.columns(3)
     m1.metric("Active Objects", active_objects)
     m2.metric("Tracked", tracked_objects)
-
-    m3, m4 = st.columns(2)
     if input_type == "Video":
         m3.metric("FPS", f"{st.session_state.last_fps:.1f}")
     else:
-        m3.metric("Processamento", f"{st.session_state.last_processing_ms:.0f} ms")
-    m4.metric("Inside ROI", inside_roi)
+        m3.metric("Processing", f"{st.session_state.last_processing_ms:.0f} ms")
 
-    # -------------------------------------------------------------
+    m4, m5 = st.columns(2)
+    m4.metric("Inside ROI", inside_roi)
+    m5.metric("Events", len(events.get_recent(200)))
+
+    # Insights
+    if objects:
+        unique_classes = set(o.class_name for o in objects)
+        moving_count = sum(1 for o in objects if o.state == "MOVING")
+        max_conf = max(o.confidence for o in objects) if objects else 0.0
+        small_count = sum(1 for o in objects if o.small_object)
+
+        insights = []
+        if unique_classes:
+            insights.append(f"{len(unique_classes)} active class{'es' if len(unique_classes) > 1 else ''}")
+        if moving_count > 0:
+            insights.append(f"{moving_count} object{'s' if moving_count > 1 else ''} moving")
+        insights.append(f"Highest confidence: {max_conf:.1%}")
+        if small_count > 0:
+            insights.append(f"{small_count} small object{'s' if small_count > 1 else ''}")
+
+        if insights:
+            st.markdown(
+                "<div>" + "".join(f'<span class="insight-pill">{insight}</span>' for insight in insights) + "</div>",
+                unsafe_allow_html=True,
+            )
+
     # Detection status
-    # -------------------------------------------------------------
     if objects:
         st.markdown(
-            f"""
-            <div class="detection-status">
-            DETECTION ENGINE · {len(objects)} OBJECT(S)
-            </div>
-            """,
+            f'<div class="detection-status">DETECTION ENGINE · {len(objects)} OBJECT(S)</div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            """
-            <div class="detection-status">
-            DETECTION ENGINE · NO OBJECTS
-            </div>
-            """,
+            '<div class="detection-status">DETECTION ENGINE · NO OBJECTS</div>',
             unsafe_allow_html=True,
         )
 
-    # -------------------------------------------------------------
     # PERCEPTION DEBUG
-    # -------------------------------------------------------------
     st.markdown("#### PERCEPTION DEBUG")
 
     stats = tracker.last_stats
-
     debug_lines = [
-        f"RAW        {stats['raw']}",
-        f"CONF FILTER {stats['after_conf_filter']}",
-        f"NMS         {stats['after_nms']}",
-        f"TILE MERGE  {stats['tile_merge']}",
-        f"SMALL       {stats['small_objects']}",
-        f"TRACKED     {stats['tracked']}",
+        f"RAW              {stats.raw}",
+        f"CONF FILTER      {stats.after_conf_filter}",
+        f"NMS              {stats.after_nms}",
+        f"TILE MERGE       {stats.tile_merge}",
+        f"SMALL            {stats.small_objects}",
+        f"FINAL            {stats.final}",
+        f"TRACKED          {stats.tracked}",
     ]
 
     st.markdown(
-        f"""
-        <div class="info-box">
-        {debug_lines[0]}<br>
-        {debug_lines[1]}<br>
-        {debug_lines[2]}<br>
-        {debug_lines[3]}<br>
-        {debug_lines[4]}<br>
-        {debug_lines[5]}
-        </div>
-        """,
+        f'<div class="info-box">{"<br>".join(debug_lines)}</div>',
         unsafe_allow_html=True,
     )
 
-    # -------------------------------------------------------------
     # Object selector
-    # -------------------------------------------------------------
     if objects:
         options = {}
         for obj in objects:
-            if obj.track_id > 0:
-                label = f"{obj.class_name} #{obj.track_id}"
-            else:
-                label = f"{obj.class_name} [DET]"
+            label = f"{obj.class_name} {obj.display_id}"
             options[label] = obj.track_id
 
         selected_label = st.selectbox(
@@ -996,50 +932,39 @@ with col_info:
         )
 
         if selected_obj is not None:
+            info_lines = [
+                f"ID · {selected_obj.display_id}",
+                f"Class · {selected_obj.class_name}",
+                f"Confidence · {selected_obj.confidence:.1%}",
+                f"State · {selected_obj.state}",
+            ]
             if selected_obj.track_id > 0:
-                id_text = f"#{selected_obj.track_id}"
-            else:
-                id_text = "Detection only"
+                info_lines.extend([
+                    f"Direction · {selected_obj.direction}",
+                    f"Speed · {selected_obj.speed:.2f} px/frame",
+                ])
+            info_lines.append(f"Center · ({selected_obj.center[0]:.0f}, {selected_obj.center[1]:.0f})")
 
             st.markdown(
-                f"""
-                <div class="info-box">
-                ID · {id_text}<br>
-                Class · {selected_obj.class_name}<br>
-                Confidence · {selected_obj.confidence:.1%}<br>
-                State · {selected_obj.state}<br>
-                Direction · {selected_obj.direction}<br>
-                Speed · {selected_obj.speed:.2f} px/frame<br>
-                Center · ({selected_obj.center[0]:.0f}, {selected_obj.center[1]:.0f})
-                </div>
-                """,
+                f'<div class="info-box">{"<br>".join(info_lines)}</div>',
                 unsafe_allow_html=True,
             )
-
     else:
         st.markdown(
-            """
-            <div class="info-box">
-            Nenhum objeto ativo.
-            </div>
-            """,
+            '<div class="info-box">No active objects.</div>',
             unsafe_allow_html=True,
         )
 
-    # -------------------------------------------------------------
     # Thermal
-    # -------------------------------------------------------------
     if thermal_stats is not None:
         st.markdown("#### THERMAL INTENSITY")
         st.markdown(
-            f"""
-            <div class="info-box">
-            Mean · {thermal_stats.mean:.1f}<br>
-            Max · {thermal_stats.maximum:.1f}<br>
-            Min · {thermal_stats.minimum:.1f}<br>
-            Std · {thermal_stats.std:.1f}
-            </div>
-            """,
+            f'<div class="info-box">'
+            f'Mean · {thermal_stats.mean:.1f}<br>'
+            f'Max · {thermal_stats.maximum:.1f}<br>'
+            f'Min · {thermal_stats.minimum:.1f}<br>'
+            f'Std · {thermal_stats.std:.1f}'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
@@ -1048,14 +973,12 @@ with col_info:
             if roi_stats:
                 st.markdown("#### THERMAL ROI")
                 st.markdown(
-                    f"""
-                    <div class="info-box">
-                    Mean · {roi_stats.mean:.1f}<br>
-                    Max · {roi_stats.maximum:.1f}<br>
-                    Min · {roi_stats.minimum:.1f}<br>
-                    Variance · {roi_stats.variance:.1f}
-                    </div>
-                    """,
+                    f'<div class="info-box">'
+                    f'Mean · {roi_stats.mean:.1f}<br>'
+                    f'Max · {roi_stats.maximum:.1f}<br>'
+                    f'Min · {roi_stats.minimum:.1f}<br>'
+                    f'Variance · {roi_stats.variance:.1f}'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -1075,20 +998,20 @@ if objects or st.session_state.all_centers:
 
     if class_counts:
         fig1 = object_activity_chart(dict(class_counts))
-        st.plotly_chart(fig1, width="stretch", config=MODEBAR_CONFIG)
-        st.caption("Objetos ativos por classe no frame atual.")
+        st.plotly_chart(fig1, use_container_width=True, config=MODEBAR_CONFIG)
+        st.caption("Objects detected in the current frame, grouped by class.")
 
     # Confidence
     if objects:
         fig2 = confidence_chart(objects)
-        st.plotly_chart(fig2, width="stretch", config=MODEBAR_CONFIG)
-        st.caption("Distribuição de confiança das detecções.")
+        st.plotly_chart(fig2, use_container_width=True, config=MODEBAR_CONFIG)
+        st.caption("Confidence distribution of the current detections.")
 
     # Motion
     if objects:
         fig3 = motion_chart(objects)
-        st.plotly_chart(fig3, width="stretch", config=MODEBAR_CONFIG)
-        st.caption("Velocidade instantânea em pixels/frame.")
+        st.plotly_chart(fig3, use_container_width=True, config=MODEBAR_CONFIG)
+        st.caption("Estimated object displacement in pixels per frame.")
 
     # Trajectory
     trajectories = {
@@ -1114,21 +1037,21 @@ if objects or st.session_state.all_centers:
             selected_id=st.session_state.selected_track,
             img_shape=img_shape,
         )
-        st.plotly_chart(fig4, width="stretch", config=MODEBAR_CONFIG)
-        st.caption("Trajetórias recentes dos objetos rastreados.")
+        st.plotly_chart(fig4, use_container_width=True, config=MODEBAR_CONFIG)
+        st.caption("Spatial paths of tracked objects with start / current markers.")
 
     # Events
     recent_events = events.get_recent(80)
     if recent_events:
         fig5 = event_timeline_chart(recent_events)
-        st.plotly_chart(fig5, width="stretch", config=MODEBAR_CONFIG)
-        st.caption("Linha do tempo de eventos detectados.")
+        st.plotly_chart(fig5, use_container_width=True, config=MODEBAR_CONFIG)
+        st.caption("Temporal event markers.")
 
     # Thermal
     if intensity_map is not None:
         fig6 = thermal_analysis_chart(intensity_map)
-        st.plotly_chart(fig6, width="stretch", config=MODEBAR_CONFIG)
-        st.caption("Intensidade relativa. Não representa temperatura calibrada.")
+        st.plotly_chart(fig6, use_container_width=True, config=MODEBAR_CONFIG)
+        st.caption("Relative image intensity distribution. Not calibrated temperature.")
 
     # Movement density
     if st.session_state.all_centers and img_shape is not None:
@@ -1137,19 +1060,15 @@ if objects or st.session_state.all_centers:
                 st.session_state.all_centers,
                 img_shape,
             )
-            st.plotly_chart(fig7, width="stretch", config=MODEBAR_CONFIG)
-            st.caption("Densidade espacial das trajetórias.")
+            st.plotly_chart(fig7, use_container_width=True, config=MODEBAR_CONFIG)
+            st.caption("Spatial concentration of tracked object positions.")
         except Exception as exc:
             logger.exception("Movement density failed: %s", exc)
-            st.info("Não foi possível gerar o gráfico de densidade.")
+            st.info("Movement density could not be generated.")
 
 else:
     st.markdown(
-        """
-        <div class="info-box">
-        Carregue uma imagem ou vídeo para gerar analytics.
-        </div>
-        """,
+        '<div class="info-box">Load an image or video to generate analytics.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1177,11 +1096,7 @@ if recent:
     st.code("\n".join(lines), language=None)
 else:
     st.markdown(
-        """
-        <div class="info-box">
-        Nenhum evento registrado ainda.
-        </div>
-        """,
+        '<div class="info-box">No events recorded yet.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1192,11 +1107,9 @@ else:
 
 st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
 st.markdown(
-    """
-    <div class="info-box">
-    VISION MINI LAB · Relative Thermal Intensity ≠ calibrated temperature ·
-    Speed = pixels/frame · Physical metrics require geometric calibration.
-    </div>
-    """,
+    '<div class="info-box">'
+    'VISION MINI LAB · Relative Thermal Intensity ≠ calibrated temperature · '
+    'Speed = pixels/frame · Physical metrics require geometric calibration.'
+    '</div>',
     unsafe_allow_html=True,
 )
