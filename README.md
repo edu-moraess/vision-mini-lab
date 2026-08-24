@@ -1,206 +1,200 @@
 # VISION MINI LAB
 
-**Real-Time Visual Intelligence**
+**Computer Vision Scene Analysis Laboratory**
 
-A compact experimental station for computer vision perception.
-
-Built for stability, clarity and professional visual analysis — not as a tutorial demo.
+Análise de cenas estáticas e dinâmicas com detecção de objetos, métricas geométricas, espaciais e temporais, utilizando **YOLO**, **OpenCV** e **Streamlit**.
 
 ---
 
-## Overview
+## 🎯 Objetivo
 
-VISION MINI LAB is a focused laboratory for real-time visual intelligence. It combines object detection, multi-object tracking, motion analysis, relative thermal visualization, event detection and interactive spatial analytics into a single, coherent Streamlit application.
-
-**Design principles**
-
-- Stability over feature count
-- Quality over complexity
-- Clarity over visual noise
-- Controlled dependencies
-
----
-
-## Features
-
-| Module | Capability |
-|--------|------------|
-| **Detection** | YOLOv8s (Ultralytics) with confidence / IoU control |
-| **Tracking** | Built-in Ultralytics tracker with persistent IDs |
-| **Motion** | dx, dy, speed (px/frame), 8-way direction, STATIONARY / MOVING |
-| **Trajectory** | Short per-object history (≈ 60 points) |
-| **ROI** | Single rectangular region — Objects Inside count |
-| **Line Crossing** | Single virtual line with debounce |
-| **Events** | OBJECT_ENTERED, OBJECT_EXITED, LINE_CROSSED, STARTED_MOVING, STOPPED |
-| **Thermal** | Relative intensity visualization (Inferno / Magma / Turbo) + overlay |
-| **Analytics** | Object activity, confidence, motion, trajectory, event timeline, thermal distribution, movement density heatmap |
-| **Input** | Image (JPG, PNG, WEBP, BMP, TIFF) and Video (MP4 and common codecs) |
+O **Vision Mini Lab** é um laboratório de visão computacional projetado para:
+- **Detecção de objetos** (YOLOv8).
+- **Análise geométrica** (área, proporção, tamanho relativo).
+- **Análise espacial** (distribuição em grade 3x3, densidade, centróide).
+- **Rastreamento de objetos** (ID, deslocamento, direção, trajetória).
+- **Análise temporal** (evolução de objetos por frame, métricas de confiança ao longo do tempo).
+- **Métricas de qualidade** (indicadores baseados em confiança e consistência).
 
 ---
 
-## Architecture
+## 🧠 Pipeline
 
-```
-IMAGE / VIDEO
-      ↓
-YOLO DETECTION
-      ↓
-OBJECT TRACKING
-      ↓
-MOTION ANALYSIS
-      ↓
-THERMAL VISUALIZATION
-      ↓
-EVENT DETECTION
-      ↓
-VISUAL ANALYTICS
-```
+Input (Imagem/Vídeo/Câmera)
+↓
+Detecção YOLO
+↓
+Análise Geométrica (área, aspecto, tamanho relativo)
+↓
+Análise Espacial (regiões, densidade, centróide)
+↓
+Rastreamento (opcional: ID, deslocamento, direção)
+↓
+Análise Temporal (vídeo: contagem de objetos, confiança por frame)
+↓
+Geração de Relatório e Visualização
 
-```
+
+---
+
+## 📊 Métricas Implementadas
+
+### **Geométricas**
+- **Bounding Box**: Coordenadas `(x1, y1, x2, y2)`.
+- **Dimensões**: Largura, altura, área (pixels e relativa à imagem).
+- **Proporção**: *Aspect ratio* (largura/altura).
+- **Centro**: Coordenadas absolutas e normalizadas.
+- **Distância Relativa**: Baseada no tamanho aparente (sem calibração de câmera).
+
+### **Espaciais**
+- **Regiões**: Classificação em grade 3x3 (ex: `SUPERIOR_ESQUERDA`, `CENTRO`).
+- **Densidade**: Objetos por milhão de pixels.
+- **Centróide Global**: Ponto médio de todos os objetos detectados.
+- **Cobertura de União**: Área total coberta por *bounding boxes* (evita dupla contagem em sobreposições).
+
+### **Confiança**
+- **Estatísticas**: Média, mediana, desvio padrão.
+- **Faixas**: `MUITO_ALTA` (≥90%), `ALTA` (75-89%), `MODERADA` (50-74%), `BAIXA` (<50%).
+- **Distribuição**: Gráfico de barras por faixa de confiança.
+
+### **Temporais** (apenas para vídeo)
+- **Contagem de Objetos**: Por frame.
+- **Confiança Média**: Por frame.
+- **Rastreamentos Ativos**: Número de objetos rastreados por frame.
+- **Evolução**: Gráfico de linha da contagem de objetos ao longo do tempo.
+
+### **Sobreposição (IoU)**
+- **Cálculo Par a Par**: *Intersection over Union* entre objetos.
+- **Classificação**: `ALTO` (IoU > 0.6), `MÉDIO` (0.4-0.6), `BAIXO` (<0.4).
+- **Lista de Pares**: Objetos com IoU > 0.3.
+
+### **Indicador de Qualidade**
+- **Heurística**: Baseado em:
+  - **`HIGH`**: Confiança média ≥ 80% e ≥70% das detecções com confiança ≥75%.
+  - **`MEDIUM`**: Confiança média ≥ 60% e ≥40% das detecções com confiança ≥75%.
+  - **`LOW`**: Caso contrário.
+
+---
+
+## 📦 Instalação
+
+### Pré-requisitos
+- Python 3.8+
+- Git
+
+### Passos
+1. Clone o repositório:
+   ```bash
+   git clone https://github.com/edu-moraess/vision-mini-lab.git
+   cd vision-mini-lab
+
+Crie um ambiente virtual:
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate     # Windows
+ 2. Instale as dependências:
+pip install -r requirements.txt
+ 3. (Opcional) Configure a GROQ API Key para descrição de frames:
+- Crie um arquivo .env na raiz do projeto:
+GROQ_API_KEY=sua_chave_aqui
+YOLO_MODEL=yolov8n.pt  # ou outro modelo YOLO
+🚀 Execução
+Inicie o aplicativo Streamlit:
+streamlit run app.py
+O aplicativo estará disponível em http://localhost:8501.
+📂 Estrutura do Projeto
+
 vision-mini-lab/
-├── app.py                  # Streamlit entry point
-├── requirements.txt
-├── README.md
-├── LICENSE
+├── app.py                  # Interface principal (Streamlit)
+├── requirements.txt        # Dependências
+├── README.md               # Documentação
 ├── .gitignore
 ├── src/
-│   ├── perception/
-│   │   ├── detector.py     # YOLO wrapper
-│   │   └── tracker.py      # Ultralytics track + history
-│   ├── motion/
-│   │   └── motion.py       # speed, direction, state
-│   ├── thermal/
-│   │   └── thermal.py      # intensity, colormap, overlay, stats
-│   ├── events/
-│   │   └── events.py       # ROI, line, motion events
-│   ├── analytics/
-│   │   └── analytics.py    # Plotly charts
-│   └── utils/
-│       └── image.py        # load, EXIF, normalize, resize
-└── tests/
-    ├── test_image.py
-    ├── test_motion.py
-    ├── test_thermal.py
-    └── test_events.py
-```
+│   ├── analyzer.py         # Análise geométrica e classificação
+│   ├── detector.py         # Detector YOLO e rastreamento
+│   ├── export.py           # Exportação de dados (CSV/JSON)
+│   ├── metrics.py          # Métricas de performance
+│   ├── processor.py        # Processamento de frames (vídeo/câmera)
+│   ├── report.py           # Geração de relatórios
+│   ├── spatial.py          # Análise espacial (regiões, densidade, união)
+│   ├── temporal.py         # Análise temporal (vídeo)
+│   ├── tracking.py         # Métricas de rastreamento
+│   ├── video.py            # Utilitários para vídeo
+│   └── visualization.py    # Funções de desenho (grade, centros, trajetórias)
+├── tests/
+│   ├── test_analyzer.py    # Testes para analyzer.py
+│   ├── test_core.py        # Testes gerais
+│   ├── test_spatial.py     # Testes para spatial.py
+│   └── test_tracking.py    # Testes para tracking.py
+└── data/
+    └── captures/           # Frames capturados
+
+🎛️ Funcionalidades da Interface
+Abas Disponíveis
+ 1. 📷 Imagem:
+- Upload de imagens (JPG, PNG, WEBP).
+- Detecção de objetos com YOLO.
+- Visualização de bounding boxes, grade espacial e centros.
+- Relatório detalhado com métricas geométricas, espaciais e de confiança.
+- Exportação de dados (CSV/JSON).
+ 2. 🎬 Vídeo:
+- Upload de vídeos (MP4, AVI, MOV, MKV).
+- Processamento frame a frame com opção de sampling.
+- Visualização de trajetórias (se rastreamento estiver ativo).
+- Métricas temporais (evolução de objetos, confiança média).
+- Gráfico de linha da contagem de objetos ao longo do tempo.
+ 3. 📹 Câmera:
+- Captura em tempo real da webcam.
+- Detecção e rastreamento de objetos.
+- Métricas de performance (FPS, contagem de objetos).
+ 4. 📊 Métricas:
+- Resumo da sessão (frames analisados, objetos totais, FPS).
+- Métricas temporais (se aplicável).
+Configurações (Sidebar)
+- Confidence Threshold: Filtro de confiança mínima para detecções.
+- Sample Every: Processa 1 frame a cada N frames (para vídeo/câmera).
+- Tracking: Ativa/desativa rastreamento de objetos.
+- Box Details: Exibe detalhes nas bounding boxes (centro, tamanho, área).
+- Mostrar Trajetórias: Desenha trajetórias de objetos rastreados.
+- Mostrar Grade Espacial: Exibe grade 3x3 na imagem.
+- Mostrar Centros: Marca o centro de cada bounding box.
+- Descrever Frame (GROQ): Usa IA para descrever a cena (requer GROQ_API_KEY).
+🔬 Limitações
+ 1. Espaço de Imagem:
+- Todas as métricas são em pixels (sem calibração de câmera para mundo real).
+- Distância relativa é baseada no tamanho aparente, não em distância física.
+- Velocidade é medida em px/frame, não em m/s.
+ 2. Rastreamento:
+- Depende do YOLO e pode falhar em oclusões ou objetos muito rápidos.
+- Histórico de trajetória limitado a 10 pontos por objeto.
+ 3. Desempenho:
+- Processamento em tempo real pode ser lento em hardware modestos.
+- Recomenda-se usar sample_every > 1 para vídeos em alta resolução.
+📄 Licença
+Este projeto está licenciado sob a MIT License. Veja o arquivo LICENSE para mais detalhes.
+🤝 Contribuições
+Contribuições são bem-vindas! Sinta-se à vontade para:
+- Reportar bugs ou sugerir melhorias via Issues.
+- Enviar Pull Requests com novas funcionalidades ou correções.
+
 
 ---
+### **Destaques das Melhorias Recentes**
+1. **Análise Temporal**:
+   - Novo módulo `temporal.py` para rastrear métricas ao longo do tempo (vídeo).
+   - Gráfico de evolução da contagem de objetos.
 
-## Installation
+2. **Métricas Espaciais**:
+   - **Union Coverage**: Cálculo da área total coberta por *bounding boxes* (evita dupla contagem).
+   - **Classificação Relativa**: Tamanho dos objetos em relação à imagem (`MUITO_PEQUENO`, `PEQUENO`, etc.).
 
-```bash
-git clone https://github.com/edu-moraess/vision-mini-lab.git
-cd vision-mini-lab
+3. **Rastreamento**:
+   - Métricas de deslocamento, direção e trajetória.
+   - Visualização de trajetórias na aba **Vídeo**.
 
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+4. **Relatório**:
+   - Inclusão de **área relativa** e **union coverage** no relatório.
+   - Exportação em **CSV/JSON** com todos os campos.
 
-pip install -r requirements.txt
-```
-
-> Uses `opencv-python-headless` only. Do not install `opencv-python` alongside it.
-
----
-
-## Usage
-
-```bash
-streamlit run app.py
-```
-
-1. Upload an image or video.
-2. Adjust confidence / IoU in the sidebar.
-3. Toggle RGB / THERMAL / OVERLAY view.
-4. Optionally enable ROI and a virtual line.
-5. Inspect Object Intelligence, analytics charts and the event timeline.
-
----
-
-## Computer Vision Pipeline
-
-1. **Image normalization** — Pillow loads bytes → EXIF orientation correction → RGB uint8 H×W×3.
-2. **Detection / Tracking** — YOLOv8s with Ultralytics `track(persist=True)`.
-3. **Motion** — Centroid displacement between frames. Speed = √(dx² + dy²) in **pixels per frame**. Direction quantized to 8 cardinal/intercardinal bins. Small displacements are ignored.
-4. **Events** — Stateless geometry checks + simple debounce for line crossings. Events are kept in a bounded in-memory list.
-5. **Rendering** — Minimal overlays (ID, class, confidence). Optional short trajectory polylines.
-
----
-
-## Thermal Vision
-
-Thermal processing is **image-based relative intensity**, not radiometric temperature.
-
-- Intensity is derived from luminance (no deep-learning thermal model).
-- Colormaps: Inferno (default), Magma, Turbo.
-- Modes: RGB · THERMAL · OVERLAY (with adjustable opacity).
-- Statistics reported as **Relative Intensity** (mean, max, min, std, variance).
-- **Never** presented as °C or Kelvin without proper radiometric calibration.
-
----
-
-## Analytics
-
-Charts are rendered vertically (one below the other) with Plotly:
-
-1. **Object Activity** — counts by class
-2. **Confidence** — per-object confidence bars
-3. **Motion** — speed (px/frame) and direction
-4. **Trajectory** — spatial paths with start / current markers
-5. **Event Timeline** — temporal event markers
-6. **Thermal Intensity Distribution** — histogram of relative intensity
-7. **Movement Density** — 2D histogram of trajectory centers (conceptually separate from thermal)
-
-Modebar is configured for a clean technical appearance (transparent background, no logo).
-
----
-
-## Testing
-
-```bash
-pytest tests/ -v
-```
-
-Coverage focuses on:
-
-- Image loader (JPG, PNG, WEBP, BMP, TIFF, grayscale, RGBA)
-- Motion (dx, dy, speed, direction, stationary threshold)
-- Thermal (normalization, statistics, overlay, ROI)
-- Events (ROI enter/exit, line crossing, motion state changes)
-
----
-
-## Limitations
-
-- Speed is expressed in **pixels/frame**. Converting to m/s or km/h requires camera calibration and known geometry.
-- Thermal values are **relative intensity**, not physical temperature.
-- Video processing is frame-selectable (not continuous live playback) for stability on Streamlit Cloud.
-- Single rectangular ROI and single virtual line only.
-- Trajectory history is intentionally short (≈ 60 points) to bound memory.
-
----
-
-## Roadmap (Future)
-
-The following are **not** implemented in this version:
-
-- Depth estimation
-- Multi-camera support
-- Advanced sensor fusion
-- Custom model training
-- Instance segmentation
-- Pose estimation
-- Edge hardware deployment
-- Mobile / AR clients
-- LLM / agent integration
-
-Architecture is modular enough to accept future video sources (USB camera, thermal camera, edge device) without rewriting the core pipeline.
-
----
-
-## License
-
-MIT License — see [LICENSE](LICENSE).
-
----
-
-*VISION MINI LAB — small in surface area, deliberate in engineering.*
+5. **Testes**:
+   - Novos testes para `spatial.py` e `tracking.py` (24 testes passando).
