@@ -1,1204 +1,1225 @@
-"""
-VISION MINI LAB
-Real-Time Visual Intelligence
-
-Computer vision laboratory:
-- YOLO object detection with multi-scale pipeline
-- Optional persistent tracking with stable ID colors
-- Motion analysis
-- Event detection
-- Relative thermal intensity
-- Trajectory visualization
-- Streamlit analytics
-"""
-
-from __future__ import annotations
-
-import logging
+import base64
+import datetime
 import os
-import tempfile
 import time
-from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
 import streamlit as st
-from ultralytics import YOLO
+import pandas as pd
+from src import charts
 
-from src.analytics.analytics import (
-    MODEBAR_CONFIG,
-    apply_chart_theme,
-    confidence_chart,
-    event_timeline_chart,
-    motion_chart,
-    movement_density_heatmap,
-    object_activity_chart,
-    thermal_analysis_chart,
-    trajectory_chart,
+from src.detector import YoloDetector
+from src.metrics import MetricsAggregator, compute_box_metrics
+from src.video import (
+    ALLOWED_IMAGE_EXTENSIONS,
+    ALLOWED_VIDEO_EXTENSIONS,
+    decode_image_bytes,
+    get_video_metadata,
+    save_uploaded_file,
 )
-from src.events.events import EventEngine
-from src.motion.motion import MotionAnalyzer
-from src.perception.tracker import Tracker, TrackedObject
-from src.perception.detector import DetectionConfig, load_model, get_id_color
-from src.thermal.thermal import (
-    compute_roi_stats,
-    process_thermal,
-)
-from src.utils.image import (
-    load_image_from_bytes,
-    resize_keep_aspect,
-)
-
-
-# =============================================================================
-# LOGGING
-# =============================================================================
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("vision-mini-lab")
-
-
-# =============================================================================
-# PAGE CONFIG
-# =============================================================================
+from src.processor import FrameProcessor
+from src.report import generate_report
+from src.export import export_detections_csv, export_report_json
+from src.visualization import draw_grid, draw_centers, draw_trajectory, create_scene_map, draw_roi, draw_line
+from src.temporal import TemporalAnalyzer
+from src.spatial import RegionOfInterest, LineCrossingDetector
+from src.motion import MotionAnalyzer
+from src.events import EventEngine
+from src.tracking import compute_tracking_metrics, build_tracked_objects
 
 st.set_page_config(
     page_title="VISION MINI LAB",
-    page_icon="🚦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# =============================================================================
-# EMOJIS PARA CLASSES (COCO - cobertura completa para ruas e galpões)
-# =============================================================================
-
-CLASS_EMOJIS = {
-    "person": "🧑",
-    "bicycle": "🚲",
-    "car": "🚗",
-    "motorcycle": "🏍️",
-    "airplane": "✈️",
-    "bus": "🚌",
-    "train": "🚆",
-    "truck": "🚚",
-    "boat": "⛵",
-    "traffic light": "🚦",
-    "fire hydrant": "🧯",
-    "stop sign": "🛑",
-    "parking meter": "🅿️",
-    "bench": "🪑",
-    "bird": "🐦",
-    "cat": "🐱",
-    "dog": "🐶",
-    "horse": "🐴",
-    "sheep": "🐑",
-    "cow": "🐄",
-    "elephant": "🐘",
-    "bear": "🐻",
-    "zebra": "🦓",
-    "giraffe": "🦒",
-    "backpack": "🎒",
-    "umbrella": "☂️",
-    "handbag": "👜",
-    "tie": "👔",
-    "suitcase": "🧳",
-    "frisbee": "🥏",
-    "skis": "🎿",
-    "snowboard": "🏂",
-    "sports ball": "⚽",
-    "kite": "🪁",
-    "baseball bat": "⚾",
-    "baseball glove": "🧤",
-    "skateboard": "🛹",
-    "surfboard": "🏄",
-    "tennis racket": "🎾",
-    "bottle": "🍾",
-    "wine glass": "🍷",
-    "cup": "☕",
-    "fork": "🍴",
-    "knife": "🔪",
-    "spoon": "🥄",
-    "bowl": "🥣",
-    "banana": "🍌",
-    "apple": "🍎",
-    "sandwich": "🥪",
-    "orange": "🍊",
-    "broccoli": "🥦",
-    "carrot": "🥕",
-    "hot dog": "🌭",
-    "pizza": "🍕",
-    "donut": "🍩",
-    "cake": "🎂",
-    "chair": "🪑",
-    "couch": "🛋️",
-    "potted plant": "🪴",
-    "bed": "🛏️",
-    "dining table": "🍽️",
-    "toilet": "🚽",
-    "tv": "📺",
-    "laptop": "💻",
-    "mouse": "🖱️",
-    "remote": "📟",
-    "keyboard": "⌨️",
-    "cell phone": "📱",
-    "microwave": "📡",
-    "oven": "🔥",
-    "toaster": "🍞",
-    "sink": "🚰",
-    "refrigerator": "🧊",
-    "book": "📖",
-    "clock": "🕰️",
-    "vase": "🏺",
-    "scissors": "✂️",
-    "teddy bear": "🧸",
-    "hair drier": "💨",
-    "toothbrush": "🪥",
-}
-
-
-# =============================================================================
-# CSS (sem dependência externa, fontes nativas para celular)
-# =============================================================================
-
-st.markdown(
-    """
-<style>
-html, body, [class*="css"] {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
-
-.stApp {
-    background-color: #0c0c0f;
-    color: #d0d0d8;
-}
-
-h1, h2, h3, h4 {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-weight: 600 !important;
-    letter-spacing: 0.04em;
-    color: #e8e8f0 !important;
-}
-
-.main-title {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 1.8rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #f0f0f8;
-    margin-bottom: 0.15rem;
-}
-
-.sub-title {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 0.8rem;
-    letter-spacing: 0.15em;
-    color: #6b6b78;
-    margin-bottom: 1.5rem;
-}
-
-section[data-testid="stSidebar"] {
-    background-color: #101014;
-    border-right: 1px solid #1e1e26;
-}
-
-.stButton > button {
-    background-color: #1a1a22;
-    color: #c8c8d4;
-    border: 1px solid #2a2a34;
-    border-radius: 4px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 0.8rem;
-    letter-spacing: 0.05em;
-}
-
-.stButton > button:hover {
-    border-color: #3d8bfd;
-    color: #e0e0ec;
-}
-
-div[data-testid="stMetric"] {
-    background-color: #121218;
-    border: 1px solid #1e1e26;
-    border-radius: 4px;
-    padding: 0.6rem 0.8rem;
-}
-
-div[data-testid="stMetric"] label {
-    color: #7a7a88 !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 0.7rem !important;
-    letter-spacing: 0.08em;
-}
-
-.block-divider {
-    border: none;
-    border-top: 1px solid #1e1e26;
-    margin: 1.2rem 0;
-}
-
-.info-box {
-    background-color: #121218;
-    border: 1px solid #1e1e26;
-    border-radius: 4px;
-    padding: 0.75rem 1rem;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 0.78rem;
-    color: #a0a0b0;
-    line-height: 1.55;
-}
-
-.detection-status {
-    background-color: #121218;
-    border: 1px solid #1e1e26;
-    border-radius: 4px;
-    padding: 0.55rem 0.8rem;
-    margin-bottom: 0.8rem;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 0.75rem;
-}
-
-.insight-pill {
-    display: inline-block;
-    background-color: #1a1a22;
-    border: 1px solid #2a2a34;
-    border-radius: 3px;
-    padding: 0.25rem 0.6rem;
-    margin: 0.15rem 0.3rem 0.15rem 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 0.72rem;
-    color: #8a8a98;
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-
-# =============================================================================
-# MODEL LOADING (cached)
-# =============================================================================
-
-@st.cache_resource(show_spinner=False)
-def load_yolo_model(model_name: str = "yolo11s.pt") -> Optional[YOLO]:
-    return load_model(model_name)
-
-
-# =============================================================================
-# UTILITIES
-# =============================================================================
-
-def clamp_roi(
-    roi: Optional[Tuple[int, int, int, int]],
-    shape: Tuple[int, int, int],
-) -> Optional[Tuple[int, int, int, int]]:
-    """Ensure ROI stays within image bounds."""
-    if roi is None:
-        return None
-
-    h, w = shape[:2]
-    x1, y1, x2, y2 = roi
-
-    x1 = max(0, min(int(x1), w))
-    y1 = max(0, min(int(y1), h))
-    x2 = max(0, min(int(x2), w))
-    y2 = max(0, min(int(y2), h))
-
-    if x1 >= x2 or y1 >= y2:
-        return None
-
-    return (x1, y1, x2, y2)
-
-
-def safe_div(a: float, b: float, default: float = 0.0) -> float:
-    """Safe division with default fallback."""
-    return a / b if b != 0 else default
-
-
-# =============================================================================
-# DRAWING
-# =============================================================================
-
-def draw_overlays(
-    image_rgb: np.ndarray,
-    objects: List[TrackedObject],
-    roi: Optional[Tuple[int, int, int, int]] = None,
-    line: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None,
-    show_motion: bool = False,
-) -> np.ndarray:
-    """
-    Draw clean computer-vision overlays.
-    Detection objects are rendered even when no tracking ID is available.
-    """
-    if image_rgb is None or image_rgb.size == 0:
-        return image_rgb
-
-    out = image_rgb.copy()
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    # ROI
-    if roi is not None:
-        x1, y1, x2, y2 = roi
-        cv2.rectangle(out, (x1, y1), (x2, y2), (80, 140, 220), 1, cv2.LINE_AA)
-        cv2.putText(out, "ROI", (x1 + 5, y1 + 18), font, 0.45, (100, 160, 230), 1, cv2.LINE_AA)
-
-    # Virtual line
-    if line is not None:
-        (lx1, ly1), (lx2, ly2) = line
-        cv2.line(out, (lx1, ly1), (lx2, ly2), (220, 160, 60), 2, cv2.LINE_AA)
-
-    # Objects
-    for obj in objects:
-        x1, y1, x2, y2 = map(int, obj.bbox)
-        box_color = obj.id_color
-
-        # Bounding box
-        cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2, cv2.LINE_AA)
-
-        # Label: EMOJI + CLASS - ID - CONFIDENCE
-        emoji = CLASS_EMOJIS.get(obj.class_name, "🧩")
-        label = f"{emoji} {obj.class_name.upper()} - {obj.display_id} - {obj.confidence:.0%}"
-
-        if show_motion and obj.track_id > 0 and obj.state == "MOVING":
-            label += f" - {obj.direction} - {obj.speed:.1f}px/f"
-
-        (text_width, text_height), _ = cv2.getTextSize(label, font, 0.48, 1)
-        label_y = max(y1, text_height + 10)
-
-        # Label background
-        cv2.rectangle(
-            out,
-            (x1, label_y - text_height - 9),
-            (x1 + text_width + 10, label_y),
-            (15, 15, 20),
-            -1,
-        )
-
-        # Label text
-        cv2.putText(
-            out,
-            label,
-            (x1 + 5, label_y - 5),
-            font,
-            0.48,
-            (235, 235, 240),
-            1,
-            cv2.LINE_AA,
-        )
-
-    return out
-
-
-def draw_trajectories(
-    image_rgb: np.ndarray,
-    tracker: Tracker,
-    objects: List[TrackedObject],
-) -> np.ndarray:
-    """Draw trajectory polylines for tracked objects only."""
-    if image_rgb is None or image_rgb.size == 0:
-        return image_rgb
-
-    out = image_rgb.copy()
-
-    for obj in objects:
-        if obj.track_id <= 0:
-            continue
-
-        points = tracker.get_trajectory(obj.track_id)
-        if len(points) < 2:
-            continue
-
-        points_i = np.array(points, dtype=np.int32)
-        color = obj.id_color
-        cv2.polylines(out, [points_i], False, color, 1, cv2.LINE_AA)
-
-    return out
-
-
-# =============================================================================
-# SESSION STATE
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Estado da aplicação
+# -----------------------------------------------------------------------------
 
 def init_state() -> None:
     defaults = {
-        "tracker": None,
-        "motion": MotionAnalyzer(),
-        "events": EventEngine(),
-        "all_centers": [],
-        "selected_track": None,
-        "frame_count": 0,
-        "last_fps": 0.0,
-        "last_processing_ms": 0.0,
-        "processing": False,
-        "perception_mode": "BALANCED",
-        "perception_config": {
-            "conf": 0.30,
-            "iou": 0.45,
-            "max_det": 50,
-            "imgsz": 960,
-            "tracking_conf": 0.40,
-            "smart_second_pass": True,
-            "small_object_mode": False,
-            "augment": False,
-        },
+        "video_status": "idle",
+        "video_path": None,
+        "video_meta": None,
+        "video_frame_index": 0,
+        "video_upload_token": None,
+        "video_error": None,
+        "camera_status": "idle",
+        "camera_error": None,
+        "latest_frame": None,
+        "capture_message": None,
+        "groq_message": None,
+        "metrics": MetricsAggregator(),
+        "processor": None,
+        "video_running": False,
+        "temporal_analyzer": TemporalAnalyzer(max_history=300),
+        "show_confidence_legend": True,
     }
-
     for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
+        st.session_state.setdefault(key, value)
 
 init_state()
 
+# -----------------------------------------------------------------------------
+# Detector YOLO
+# -----------------------------------------------------------------------------
 
-# =============================================================================
-# SIDEBAR
-# =============================================================================
-
-with st.sidebar:
-    st.markdown("### 🎛️ CONTROLS")
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # Perception Mode
-    st.markdown("#### 🧠 PERCEPTION MODE")
-
-    perception_mode = st.selectbox(
-        "Perception Mode",
-        ["FAST", "BALANCED", "ACCURATE"],
-        index=1,
-        label_visibility="collapsed",
-    )
-
-    mode_defaults = {
-        "FAST": {
-            "conf": 0.35,
-            "iou": 0.50,
-            "max_det": 30,
-            "imgsz": 640,
-            "tracking_conf": 0.45,
-            "smart_second_pass": False,
-            "small_object_mode": False,
-            "augment": False,
-        },
-        "BALANCED": {
-            "conf": 0.30,
-            "iou": 0.45,
-            "max_det": 50,
-            "imgsz": 960,
-            "tracking_conf": 0.40,
-            "smart_second_pass": True,
-            "small_object_mode": False,
-            "augment": False,
-        },
-        "ACCURATE": {
-            "conf": 0.25,
-            "iou": 0.40,
-            "max_det": 100,
-            "imgsz": 1280,
-            "tracking_conf": 0.35,
-            "smart_second_pass": True,
-            "small_object_mode": True,
-            "augment": True,
-        },
-    }
-
-    # Only update config when mode actually changes (prevents unnecessary reruns)
-    if st.session_state.get("perception_mode") != perception_mode:
-        st.session_state.perception_mode = perception_mode
-        st.session_state.perception_config = mode_defaults[perception_mode].copy()
-        st.rerun()
-
-    # Advanced Settings
-    with st.expander("⚙️ ADVANCED PERCEPTION", expanded=False):
-        adv = st.session_state.perception_config.copy()
-
-        adv["conf"] = st.slider("Detection Confidence", 0.15, 0.90, adv["conf"], 0.05)
-        adv["iou"] = st.slider("IoU Threshold", 0.20, 0.80, adv["iou"], 0.05)
-        adv["max_det"] = st.slider("Maximum Objects", 10, 100, adv["max_det"], 10)
-        adv["imgsz"] = st.selectbox(
-            "Inference Size",
-            [640, 768, 960, 1280],
-            index=[640, 768, 960, 1280].index(adv["imgsz"]),
-        )
-        adv["tracking_conf"] = st.slider(
-            "Tracking Confidence", 0.20, 0.90, adv["tracking_conf"], 0.05
-        )
-        adv["smart_second_pass"] = st.checkbox(
-            "Smart Second Pass", value=adv["smart_second_pass"]
-        )
-        adv["small_object_mode"] = st.checkbox(
-            "Small Object Mode", value=adv["small_object_mode"]
-        )
-        adv["augment"] = st.checkbox("Augmented Inference", value=adv["augment"])
-
-        st.session_state.perception_config = adv
-
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # Model selection
-    st.markdown("#### 🤖 MODEL")
-
-    model_choice = st.selectbox(
-        "YOLO Model",
-        ["Fast (yolo11n.pt)", "Balanced (yolo11s.pt)", "Accurate (yolo11m.pt)"],
-        index=1,
-        label_visibility="collapsed",
-    )
-
-    model_map = {
-        "Fast (yolo11n.pt)": "yolo11n.pt",
-        "Balanced (yolo11s.pt)": "yolo11s.pt",
-        "Accurate (yolo11m.pt)": "yolo11m.pt",
-    }
-    model_name = model_map[model_choice]
-
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # View / Thermal settings
-    st.markdown("#### 👁️ VIEW")
-
-    view_mode = st.radio(
-        "Display Mode",
-        ["RGB", "THERMAL", "OVERLAY"],
-        index=0,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-    colormap = st.selectbox("Colormap", ["inferno", "magma", "turbo"], index=0)
-    thermal_opacity = st.slider("Thermal Opacity", 0.1, 0.9, 0.5, 0.1)
-
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # Overlays
-    st.markdown("#### 📍 OVERLAYS")
-
-    show_tracks = st.checkbox("Trajectories", value=True)
-    show_motion_label = st.checkbox("Motion Labels", value=False)
-
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # ROI
-    st.markdown("#### 🎯 ROI")
-
-    enable_roi = st.checkbox("Enable ROI", value=False)
-
-    if enable_roi:
-        roi_x1 = st.number_input("ROI X1", 0, 4000, 100, 10)
-        roi_y1 = st.number_input("ROI Y1", 0, 4000, 100, 10)
-        roi_x2 = st.number_input("ROI X2", 0, 4000, 500, 10)
-        roi_y2 = st.number_input("ROI Y2", 0, 4000, 400, 10)
-        current_roi = (int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2))
-    else:
-        current_roi = None
-
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # Line crossing
-    st.markdown("#### 📏 LINE CROSSING")
-
-    enable_line = st.checkbox("Enable Line", value=False)
-
-    if enable_line:
-        lx1 = st.number_input("Line X1", 0, 4000, 200, 10)
-        ly1 = st.number_input("Line Y1", 0, 4000, 300, 10)
-        lx2 = st.number_input("Line X2", 0, 4000, 600, 10)
-        ly2 = st.number_input("Line Y2", 0, 4000, 300, 10)
-        current_line = ((int(lx1), int(ly1)), (int(lx2), int(ly2)))
-    else:
-        current_line = None
-
-    st.markdown('<div class="block-divider"></div>', unsafe_allow_html=True)
-
-    # Reset
-    if st.button("🔄 RESET STATE", use_container_width=True):
-        st.session_state.motion.reset()
-        st.session_state.events.clear()
-        st.session_state.all_centers = []
-        st.session_state.frame_count = 0
-        st.session_state.selected_track = None
-        st.session_state.last_fps = 0.0
-        st.session_state.last_processing_ms = 0.0
-
-        if st.session_state.tracker is not None:
-            st.session_state.tracker.reset()
-
-        st.rerun()
-
-
-# =============================================================================
-# HEADER
-# =============================================================================
-
-st.markdown('<div class="main-title">🚦 VISION MINI LAB</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">📡 REAL-TIME VISUAL INTELLIGENCE</div>', unsafe_allow_html=True)
-
-
-# =============================================================================
-# MODEL LOADING
-# =============================================================================
-
-model = load_yolo_model(model_name)
-
-if model is None:
-    st.error("YOLO model could not be loaded. Check your Ultralytics installation.")
-    st.stop()
-
-
-# =============================================================================
-# TRACKER CONFIGURATION
-# =============================================================================
-
-perception_cfg = st.session_state.perception_config
-
-det_cfg = DetectionConfig(
-    conf=perception_cfg["conf"],
-    iou=perception_cfg["iou"],
-    max_det=perception_cfg["max_det"],
-    imgsz=perception_cfg["imgsz"],
-    augment=perception_cfg["augment"],
-    smart_second_pass=perception_cfg["smart_second_pass"],
-    tracking_conf=perception_cfg["tracking_conf"],
-    small_object_threshold=0.02,
-    enable_adaptive_conf=True,
-    enhance_low_light=True,
-    max_tiles=4,
-    temporal_consistency_frames=3,
-    temporal_consistency_boost=0.05,
-)
-
-if st.session_state.tracker is None:
-    st.session_state.tracker = Tracker(model, config=det_cfg)
-else:
-    st.session_state.tracker.set_config(det_cfg)
-
-tracker: Tracker = st.session_state.tracker
-motion: MotionAnalyzer = st.session_state.motion
-events: EventEngine = st.session_state.events
-
-
-# =============================================================================
-# EVENT CONFIG
-# =============================================================================
-
-events.set_roi(current_roi)
-
-if current_line is not None:
-    events.set_line(current_line[0], current_line[1])
-else:
-    events.set_line(None, None)
-
-
-# =============================================================================
-# INPUT
-# =============================================================================
-
-st.markdown("### 📥 INPUT")
-
-input_type = st.radio(
-    "Source",
-    ["Image", "Video"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
-
-uploaded = None
-
-if input_type == "Image":
-    uploaded = st.file_uploader(
-        "Upload Image",
-        type=["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif"],
-        label_visibility="collapsed",
-    )
-else:
-    uploaded = st.file_uploader(
-        "Upload Video",
-        type=["mp4", "avi", "mov", "mkv", "webm"],
-        label_visibility="collapsed",
-    )
-
-st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
-
-
-# =============================================================================
-# VARIABLES
-# =============================================================================
-
-display_image = None
-objects: List[TrackedObject] = []
-intensity_map = None
-thermal_stats = None
-img_shape = None
-
-
-# =============================================================================
-# IMAGE PROCESSING
-# =============================================================================
-
-if uploaded is not None and input_type == "Image":
+@st.cache_resource(show_spinner=False)
+def load_detector():
     try:
-        data = uploaded.getvalue()
-        image = load_image_from_bytes(data)
-
-        if image is None:
-            st.error("Could not load this image. Unsupported format or corrupted file.")
-        else:
-            image, _ = resize_keep_aspect(image, max_side=1280)
-            img_shape = image.shape
-            current_roi = clamp_roi(current_roi, image.shape)
-
-            start_time = time.perf_counter()
-
-            # YOLO + TRACKING
-            objects = tracker.update(image, is_video=False)
-
-            # MOTION
-            try:
-                objects = motion.update(objects)
-            except Exception as exc:
-                logger.exception("Motion analysis failed: %s", exc)
-
-            # EVENTS
-            try:
-                events.update(objects)
-            except Exception as exc:
-                logger.exception("Event engine failed: %s", exc)
-
-            elapsed = time.perf_counter() - start_time
-            st.session_state.last_fps = 1.0 / elapsed if elapsed > 0 else 0.0
-            st.session_state.last_processing_ms = elapsed * 1000.0
-            st.session_state.frame_count += 1
-
-            # CENTERS (limit to 1000)
-            for obj in objects:
-                st.session_state.all_centers.append(obj.center)
-            if len(st.session_state.all_centers) > 1000:
-                st.session_state.all_centers = st.session_state.all_centers[-1000:]
-
-            # THERMAL
-            mode_map = {"RGB": "rgb", "THERMAL": "thermal", "OVERLAY": "overlay"}
-            display_image, intensity_map, thermal_stats = process_thermal(
-                image,
-                mode=mode_map[view_mode],
-                colormap=colormap,
-                opacity=thermal_opacity,
-            )
-
-            # TRAJECTORIES
-            if show_tracks:
-                display_image = draw_trajectories(display_image, tracker, objects)
-
-            # BOUNDING BOXES
-            display_image = draw_overlays(
-                display_image,
-                objects,
-                current_roi,
-                current_line,
-                show_motion_label,
-            )
+        model_name = os.getenv("YOLO_MODEL", "yolov8n.pt")
+        detector = YoloDetector(model_name=model_name)
+        return detector, None
     except Exception as exc:
-        logger.exception("Image processing failed: %s", exc)
-        st.error(f"Image processing error: {exc}")
+        return None, str(exc)
 
+detector, detector_error = load_detector()
 
-# =============================================================================
-# VIDEO PROCESSING
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Groq (opcional)
+# -----------------------------------------------------------------------------
 
-elif uploaded is not None and input_type == "Video":
-    tmp_path = None
-
+def get_groq_api_key():
     try:
-        suffix = os.path.splitext(uploaded.name)[1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded.getvalue())
-            tmp_path = tmp.name
-
-        cap = cv2.VideoCapture(tmp_path)
-
-        if not cap.isOpened():
-            st.error("Could not open this video.")
-        else:
-            fps_video = cap.get(cv2.CAP_PROP_FPS) or 25.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            duration = total_frames / fps_video if fps_video > 0 else 0
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("VIDEO FPS", f"{fps_video:.1f}")
-            c2.metric("RESOLUTION", f"{width}×{height}")
-            c3.metric("FRAMES", f"{total_frames}")
-            c4.metric("DURATION", f"{duration:.1f}s")
-
-            max_frames = min(total_frames, 300)
-            frame_idx = st.slider("Frame", 0, max(0, max_frames - 1), 0)
-
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame_bgr = cap.read()
-
-            if not ret:
-                st.error("Could not read this frame.")
-            else:
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                frame_rgb, _ = resize_keep_aspect(frame_rgb, max_side=1280)
-                img_shape = frame_rgb.shape
-                current_roi = clamp_roi(current_roi, frame_rgb.shape)
-
-                start_time = time.perf_counter()
-
-                objects = tracker.update(frame_rgb, is_video=True)
-
-                try:
-                    objects = motion.update(objects)
-                except Exception as exc:
-                    logger.exception("Motion error: %s", exc)
-
-                try:
-                    events.update(objects, frame_time=(frame_idx / fps_video))
-                except Exception as exc:
-                    logger.exception("Event error: %s", exc)
-
-                elapsed = time.perf_counter() - start_time
-                st.session_state.last_fps = 1.0 / elapsed if elapsed > 0 else 0.0
-                st.session_state.last_processing_ms = elapsed * 1000.0
-                st.session_state.frame_count = frame_idx
-
-                for obj in objects:
-                    st.session_state.all_centers.append(obj.center)
-                if len(st.session_state.all_centers) > 1000:
-                    st.session_state.all_centers = st.session_state.all_centers[-1000:]
-
-                mode_map = {"RGB": "rgb", "THERMAL": "thermal", "OVERLAY": "overlay"}
-                display_image, intensity_map, thermal_stats = process_thermal(
-                    frame_rgb,
-                    mode=mode_map[view_mode],
-                    colormap=colormap,
-                    opacity=thermal_opacity,
-                )
-
-                if show_tracks:
-                    display_image = draw_trajectories(display_image, tracker, objects)
-
-                display_image = draw_overlays(
-                    display_image,
-                    objects,
-                    current_roi,
-                    current_line,
-                    show_motion_label,
-                )
-
-        cap.release()
-
-    except Exception as exc:
-        logger.exception("Video processing failed: %s", exc)
-        st.error(f"Video processing error: {exc}")
-    finally:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-
-
-# =============================================================================
-# LIVE VIEW + OBJECT INTELLIGENCE
-# =============================================================================
-
-col_view, col_info = st.columns([1.6, 1.0])
-
-with col_view:
-    st.markdown("### 🎥 LIVE VIEW")
-
-    if display_image is not None:
-        st.image(display_image, width="stretch", channels="RGB")
-    else:
-        st.markdown(
-            '<div class="info-box">⏳ Waiting for image or video input.</div>',
-            unsafe_allow_html=True,
-        )
-
-
-with col_info:
-    st.markdown("### 🧠 OBJECT INTELLIGENCE")
-
-    active_objects = len(objects)
-    tracked_objects = sum(1 for o in objects if o.track_id > 0)
-
-    try:
-        inside_roi = events.count_inside_roi(objects)
+        if "GROQ_API_KEY" in st.secrets:
+            key = str(st.secrets["GROQ_API_KEY"]).strip()
+            if key:
+                return key
     except Exception:
-        inside_roi = 0
+        pass
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    return key if key else None
 
-    # Top metrics cards
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Active Objects", active_objects)
-    m2.metric("Tracked", tracked_objects)
-    if input_type == "Video":
-        m3.metric("FPS", f"{st.session_state.last_fps:.1f}")
-    else:
-        m3.metric("Processing", f"{st.session_state.last_processing_ms:.0f} ms")
-
-    m4, m5 = st.columns(2)
-    m4.metric("Inside ROI", inside_roi)
-    m5.metric("Events", len(events.get_recent(200)))
-
-    # Insights
-    if objects:
-        unique_classes = set(o.class_name for o in objects)
-        moving_count = sum(1 for o in objects if o.state == "MOVING")
-        max_conf = max(o.confidence for o in objects) if objects else 0.0
-        small_count = sum(1 for o in objects if o.small_object)
-
-        insights = []
-        if unique_classes:
-            insights.append(f"{len(unique_classes)} active class{'es' if len(unique_classes) > 1 else ''}")
-        if moving_count > 0:
-            insights.append(f"{moving_count} object{'s' if moving_count > 1 else ''} moving")
-        insights.append(f"Highest confidence: {max_conf:.1%}")
-        if small_count > 0:
-            insights.append(f"{small_count} small object{'s' if small_count > 1 else ''}")
-
-        if insights:
-            st.markdown(
-                "<div>" + "".join(f'<span class="insight-pill">{insight}</span>' for insight in insights) + "</div>",
-                unsafe_allow_html=True,
-            )
-
-    # Detection status
-    if objects:
-        st.markdown(
-            f'<div class="detection-status">🔍 DETECTION ENGINE - {len(objects)} OBJECT(S)</div>',
-            unsafe_allow_html=True,
+def describe_with_groq(image_bgr: np.ndarray, prompt: str):
+    api_key = get_groq_api_key()
+    if not api_key:
+        return None, "DISABLED"
+    try:
+        import requests
+    except Exception as exc:
+        return None, f"requests não instalado: {exc}"
+    try:
+        img = image_bgr
+        h, w = img.shape[:2]
+        max_side = 768
+        if max(h, w) > max_side:
+            scale = max_side / float(max(h, w))
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        ok, buffer = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return None, "Falha ao codificar imagem."
+        b64 = base64.b64encode(buffer).decode('utf-8')
+        payload = {
+            "model": os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b"),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    ],
+                }
+            ],
+            "max_tokens": int(os.getenv("GROQ_MAX_TOKENS", "300")),
+            "temperature": 0.2,
+        }
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
         )
-    else:
-        st.markdown(
-            '<div class="detection-status">🔍 DETECTION ENGINE - NO OBJECTS</div>',
-            unsafe_allow_html=True,
-        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"], None
+    except Exception as exc:
+        return None, str(exc)
 
-    # PERCEPTION DEBUG
-    st.markdown("#### 🛠️ PERCEPTION DEBUG")
-
-    stats = tracker.last_stats
-    debug_lines = [
-        f"RAW              {stats.raw}",
-        f"CONF FILTER      {stats.after_conf_filter}",
-        f"NMS              {stats.after_nms}",
-        f"TILE MERGE       {stats.tile_merge}",
-        f"SMALL            {stats.small_objects}",
-        f"FINAL            {stats.final}",
-        f"TRACKED          {stats.tracked}",
-    ]
-
-    st.markdown(
-        f'<div class="info-box">{"<br>".join(debug_lines)}</div>',
-        unsafe_allow_html=True,
+def run_groq_on_latest():
+    frame = st.session_state.get("latest_frame")
+    if frame is None:
+        st.session_state.groq_message = "Sem frame."
+        return
+    prompt = (
+        "Descreva a cena em português, com foco em objetos visíveis e disposição "
+        "espacial. Não invente medições. Não use unidades físicas como metros ou km/h."
     )
-
-    # Object selector
-    if objects:
-        options = {}
-        for obj in objects:
-            emoji = CLASS_EMOJIS.get(obj.class_name, "🧩")
-            label = f"{emoji} {obj.class_name} {obj.display_id}"
-            options[label] = obj.track_id
-
-        selected_label = st.selectbox(
-            "Selected Object",
-            list(options.keys()),
-            label_visibility="collapsed",
-        )
-        selected_id = options.get(selected_label)
-        st.session_state.selected_track = selected_id
-
-        selected_obj = next(
-            (obj for obj in objects if obj.track_id == selected_id),
-            None,
-        )
-
-        if selected_obj is not None:
-            emoji = CLASS_EMOJIS.get(selected_obj.class_name, "📦")
-            info_lines = [
-                f"ID - {selected_obj.display_id}",
-                f"{emoji} Class - {selected_obj.class_name}",
-                f"Confidence - {selected_obj.confidence:.1%}",
-                f"State - {selected_obj.state}",
-            ]
-            if selected_obj.track_id > 0:
-                info_lines.extend([
-                    f"Direction - {selected_obj.direction}",
-                    f"Speed - {selected_obj.speed:.2f} px/frame",
-                ])
-            info_lines.append(f"Center - ({selected_obj.center[0]:.0f}, {selected_obj.center[1]:.0f})")
-
-            st.markdown(
-                f'<div class="info-box">{"<br>".join(info_lines)}</div>',
-                unsafe_allow_html=True,
-            )
+    text, err = describe_with_groq(frame, prompt)
+    if err:
+        st.session_state.groq_message = f"GROQ ERROR: {err}"
     else:
-        st.markdown(
-            '<div class="info-box">No active objects.</div>',
-            unsafe_allow_html=True,
-        )
+        st.session_state.groq_message = text
 
-    # Thermal
-    if thermal_stats is not None:
-        st.markdown("#### 🌡️ THERMAL INTENSITY")
-        st.markdown(
-            f'<div class="info-box">'
-            f'Mean - {thermal_stats.mean:.1f}<br>'
-            f'Max - {thermal_stats.maximum:.1f}<br>'
-            f'Min - {thermal_stats.minimum:.1f}<br>'
-            f'Std - {thermal_stats.std:.1f}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+# -----------------------------------------------------------------------------
+# Funções auxiliares de desenho (versão simplificada)
+# -----------------------------------------------------------------------------
 
-        if current_roi is not None and intensity_map is not None:
-            roi_stats = compute_roi_stats(intensity_map, current_roi)
-            if roi_stats:
-                st.markdown("#### 🌡️ THERMAL ROI")
-                st.markdown(
-                    f'<div class="info-box">'
-                    f'Mean - {roi_stats.mean:.1f}<br>'
-                    f'Max - {roi_stats.maximum:.1f}<br>'
-                    f'Min - {roi_stats.minimum:.1f}<br>'
-                    f'Variance - {roi_stats.variance:.1f}'
-                    f'</div>',
-                    unsafe_allow_html=True,
+def get_confidence_color(confidence: float):
+    if confidence >= 0.7:
+        return (0, 255, 0)   # verde
+    elif confidence >= 0.4:
+        return (0, 255, 255) # amarelo
+    else:
+        return (0, 0, 255)   # vermelho
+
+def draw_detections(
+    frame_bgr: np.ndarray,
+    detections,
+    show_details: bool = True,
+    draw_tracks: bool = False,
+    track_history: dict = None,
+    draw_centers: bool = True,
+    show_confidence_legend: bool = True,
+) -> np.ndarray:
+    img = frame_bgr.copy()
+    h_img, w_img = img.shape[:2]
+
+    if draw_tracks and track_history:
+        for tid, history in track_history.items():
+            if len(history) > 1:
+                color = (255, 255, 255)
+                pts = np.array([(int(x), int(y)) for x, y in history], dtype=np.int32)
+                cv2.polylines(img, [pts], False, color, 2)
+
+    for det in detections:
+        color = get_confidence_color(det.confidence)
+
+        x1 = max(0, int(det.x1))
+        y1 = max(0, int(det.y1))
+        x2 = min(w_img - 1, int(det.x2))
+        y2 = min(h_img - 1, int(det.y2))
+
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+        if draw_centers:
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            cv2.circle(img, (cx, cy), 4, (255, 255, 255), -1)
+            cv2.circle(img, (cx, cy), 2, color, -1)
+
+        label_parts = []
+        if det.track_id is not None:
+            label_parts.append(f"ID {det.track_id}")
+        label_parts.append(det.label.upper())
+        label_parts.append(f"{det.confidence:.0%}")
+        label_text = " · ".join(label_parts)
+
+        text_x = max(5, x1)
+        text_y = y1 - 8
+        if text_y < 15:
+            text_y = min(h_img - 5, y2 + 18)
+
+        (tw, th), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        cv2.rectangle(img, (text_x - 2, text_y - th - 4), (text_x + tw + 2, text_y + 2), (0, 0, 0), -1)
+        cv2.putText(img, label_text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+    if show_confidence_legend:
+        legend_x = w_img - 160
+        legend_y = 20
+        cv2.rectangle(img, (legend_x, legend_y), (legend_x + 140, legend_y + 90), (50, 50, 50), -1)
+        cv2.rectangle(img, (legend_x, legend_y), (legend_x + 140, legend_y + 90), (200, 200, 200), 1)
+
+        items = [
+            ("HIGH (>=70%)", (0, 255, 0)),
+            ("MEDIUM (40-70%)", (0, 255, 255)),
+            ("LOW (<40%)", (0, 0, 255)),
+        ]
+        for i, (text, col) in enumerate(items):
+            y = legend_y + 20 + i * 25
+            cv2.circle(img, (legend_x + 15, y + 2), 6, col, -1)
+            cv2.putText(img, text, (legend_x + 30, y + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+    return img
+
+# -----------------------------------------------------------------------------
+# Funções para exibir relatório formatado
+# -----------------------------------------------------------------------------
+
+def display_report_section(report: dict) -> None:
+    """Exibe o relatório técnico completo de forma legível."""
+    st.markdown("### 1. EXECUTIVE SUMMARY")
+    st.markdown(f"> {report['executive_summary']['summary']}")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Objects", report['executive_summary']['total_objects'])
+    col2.metric("Classes", report['executive_summary']['unique_classes'])
+    col3.metric("Dominant", report['executive_summary']['dominant_class'] or "N/A")
+    col4.metric("Avg Confidence", f"{report['executive_summary']['avg_confidence']:.1%}")
+    col5.metric("Quality", report['executive_summary']['quality_level'])
+
+    st.markdown("### 2. DETECTION ANALYSIS")
+    da = report['detection_analysis']
+    conf_stats = da['confidence_stats']
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mean", f"{conf_stats['mean']:.1%}")
+    c2.metric("Median", f"{conf_stats['median']:.1%}")
+    c3.metric("Min", f"{conf_stats['min']:.1%}")
+    c4.metric("Max", f"{conf_stats['max']:.1%}")
+    st.caption(f"Std Dev: {conf_stats['std']:.2f}")
+
+    st.markdown("**Confidence Distribution:**")
+    for range_name, data in da['confidence_ranges'].items():
+        st.progress(data['percentage'] / 100, text=f"{range_name.title()}: {data['count']} ({data['percentage']:.0f}%)")
+
+    st.markdown("### 3. SPATIAL ANALYSIS")
+    sa = report['spatial_analysis']
+    st.markdown(f"> {sa['interpretation']}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Most Occupied", sa['most_occupied_region'] or "N/A")
+    c2.metric("Density", f"{sa['density_per_million_pixels']:.1f} obj/Mpx")
+    c3.metric("Centroid", f"({sa['centroid']['x']:.0f}, {sa['centroid']['y']:.0f})")
+
+    st.markdown("### 4. IMAGE OCCUPANCY")
+    occ = report['image_occupancy']
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Coverage (Union)", f"{occ['union_coverage_ratio']:.1%}")
+    c2.metric("Mean Area", f"{occ['mean_area']:.0f} px²")
+    c3.metric("Largest", f"{occ['largest_detection']} ({occ['max_area']:.0f} px²)")
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Median Area", f"{occ['median_area']:.0f} px²")
+    c5.metric("Smallest", f"{occ['smallest_detection']} ({occ['min_area']:.0f} px²)")
+    c6.metric("Std Area", f"{occ['std_area']:.0f} px²")
+
+    st.markdown("### 5. CLASS ANALYSIS")
+    ca = report['class_analysis']
+    if ca:
+        for label, data in ca.items():
+            with st.expander(f"{label} ({data['count']} objects)"):
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Count", data['count'])
+                c2.metric("Mean Confidence", f"{data['mean_confidence']:.1%}")
+                c3.metric("Mean Area", f"{data['mean_area']:.0f} px²")
+                c4.metric("Dominant Region", data['dominant_region'] or "N/A")
+    else:
+        st.caption("Nenhuma classe detectada.")
+
+    st.markdown("### 6. DETECTION RANKING")
+    rank_df = pd.DataFrame(report['detection_ranking'])
+    if not rank_df.empty:
+        st.dataframe(
+            rank_df.style.format({
+                'confidence': '{:.0%}',
+                'relative_area': '{:.2%}',
+                'aspect_ratio': '{:.2f}',
+                'distance_to_center': '{:.3f}',
+            }),
+            use_container_width=True,
+            height=300
+        )
+    else:
+        st.caption("Nenhuma detecção para classificar.")
+
+    st.markdown("### 7. LOW-CONFIDENCE REVIEW")
+    low = report['low_confidence_review']
+    if low:
+        for item in low[:10]:
+            st.warning(f"Detection #{item['id']}: {item['class']} — Confidence: {item['confidence']:.0%} — Region: {item['region']}")
+        if len(low) > 10:
+            st.caption(f"... e mais {len(low) - 10} detecções com baixa confiança.")
+    else:
+        st.success("Nenhuma detecção com baixa confiança.")
+
+    st.markdown("### 8. OVERLAP ANALYSIS")
+    oa = report['overlap_analysis']
+    st.markdown(f"> {oa['interpretation']}")
+    c1, c2 = st.columns(2)
+    c1.metric("Max IoU", f"{oa['max_iou']:.2f}")
+    c2.metric("Pairs > 0.3", oa['pairs_above_threshold'])
+    if oa['pairs']:
+        with st.expander(f"View {len(oa['pairs'])} overlapping pairs"):
+            for pair in oa['pairs'][:10]:
+                st.caption(f"#{pair['id1']} {pair['class1']} ↔ #{pair['id2']} {pair['class2']} — IoU: {pair['iou']:.2f} ({pair['level']})")
+
+    st.markdown("### 9. SCENE PROFILE")
+    sp = report['scene_profile']
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Objects", sp['objects'])
+    c2.metric("Classes", sp['classes'])
+    c3.metric("Density", sp['density'])
+    c4.metric("Distribution", sp['distribution'])
+    st.markdown(f"> {report['scene_interpretation']}")
+
+    st.markdown("### 10. QUALITY ASSESSMENT")
+    qa = report['quality_assessment']
+    quality_color = "🟢" if qa['level'] == "HIGH" else "🟡" if qa['level'] == "MEDIUM" else "🔴"
+    st.markdown(f"{quality_color} **Score:** {qa['score']:.2f} — **Level:** {qa['level']}")
+    st.markdown(f"> {qa['interpretation']}")
+
+    st.markdown("### 11. LIMITATIONS")
+    for lim in report['limitations']:
+        st.caption(f"• {lim}")
+
+# -----------------------------------------------------------------------------
+# ROI / Line Crossing — construção a partir da configuração da sidebar
+# -----------------------------------------------------------------------------
+
+def build_roi_from_state(width: int, height: int) -> Optional[RegionOfInterest]:
+    if not st.session_state.get("roi_enabled") or not width or not height:
+        return None
+    x1 = st.session_state.get("roi_x1", 25) / 100.0 * width
+    y1 = st.session_state.get("roi_y1", 25) / 100.0 * height
+    x2 = st.session_state.get("roi_x2", 75) / 100.0 * width
+    y2 = st.session_state.get("roi_y2", 75) / 100.0 * height
+    return RegionOfInterest(x1, y1, x2, y2, name="ROI")
+
+def build_line_from_state(width: int, height: int) -> Optional[LineCrossingDetector]:
+    if not st.session_state.get("line_enabled") or not width or not height:
+        return None
+    x1 = st.session_state.get("line_x1", 10) / 100.0 * width
+    y1 = st.session_state.get("line_y1", 50) / 100.0 * height
+    x2 = st.session_state.get("line_x2", 90) / 100.0 * width
+    y2 = st.session_state.get("line_y2", 50) / 100.0 * height
+    return LineCrossingDetector(x1, y1, x2, y2, name="LINE")
+
+# -----------------------------------------------------------------------------
+# Callbacks (mantidos iguais)
+# -----------------------------------------------------------------------------
+
+def start_video():
+    if st.session_state.processor:
+        st.session_state.processor.stop()
+    try:
+        meta = st.session_state.video_meta
+        roi = build_roi_from_state(meta.width, meta.height) if meta else None
+        line = build_line_from_state(meta.width, meta.height) if meta else None
+        proc = FrameProcessor(
+            video_path=str(st.session_state.video_path),
+            detector=detector,
+            conf_threshold=st.session_state.conf_threshold,
+            sample_every=st.session_state.sample_every,
+            roi=roi,
+            line_detector=line,
+        )
+        proc.start()
+        st.session_state.processor = proc
+        st.session_state.video_status = "running"
+        st.session_state.video_error = None
+        st.session_state.temporal_analyzer = TemporalAnalyzer(max_history=300)
+    except Exception as exc:
+        st.session_state.video_error = f"Erro: {exc}"
+        st.session_state.video_status = "idle"
+
+def pause_video():
+    if st.session_state.processor:
+        st.session_state.processor.pause()
+        st.session_state.video_status = "paused"
+
+def resume_video():
+    if st.session_state.processor:
+        st.session_state.processor.resume()
+        st.session_state.video_status = "running"
+
+def stop_video():
+    if st.session_state.processor:
+        st.session_state.processor.stop()
+        st.session_state.processor = None
+    st.session_state.video_status = "stopped"
+    st.session_state.video_frame_index = 0
+
+def start_camera():
+    st.session_state.camera_status = "running"
+    st.session_state.camera_error = None
+    st.session_state.metrics.reset()
+    st.session_state.temporal_analyzer = TemporalAnalyzer(max_history=300)
+    if detector is not None:
+        detector.reset_tracker()
+
+def stop_camera():
+    st.session_state.camera_status = "stopped"
+
+def capture_current_frame():
+    frame = st.session_state.get("latest_frame")
+    if frame is None:
+        st.session_state.capture_message = "Nenhum frame."
+        return
+    capture_dir = Path("data/captures")
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    base = datetime.datetime.now().strftime("capture_%Y%m%d_%H%M%S")
+    candidate = capture_dir / f"{base}.jpg"
+    counter = 1
+    while candidate.exists():
+        candidate = capture_dir / f"{base}_{counter}.jpg"
+        counter += 1
+    try:
+        ok = cv2.imwrite(str(candidate), frame)
+        st.session_state.capture_message = f"Salva em {candidate}" if ok else "Falha."
+    except Exception as exc:
+        st.session_state.capture_message = f"Erro: {exc}"
+
+# -----------------------------------------------------------------------------
+# Câmera
+# -----------------------------------------------------------------------------
+
+def run_camera_loop(conf_threshold, sample_every, tracking_enabled, show_details, draw_centers, show_legend):
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        st.session_state.camera_error = "Webcam indisponível."
+        st.session_state.camera_status = "idle"
+        return
+    frame_placeholder = st.empty()
+    metrics_placeholder = st.empty()
+    intelligence_placeholder = st.empty()
+    frame_count = 0
+    last_detections = []
+    last_read = time.perf_counter()
+    source_fps = None
+    loop_start = time.perf_counter()
+
+    # Estado local do pipeline de inteligência (recriado a cada sessão de
+    # câmera — o loop é um único bloco contínuo, sem rerun por frame).
+    track_history: dict = {}
+    motion_analyzer = MotionAnalyzer()
+    event_engine = EventEngine()
+    previously_active_ids: set = set()
+    roi = None
+    line_detector = None
+
+    try:
+        while cap.isOpened():
+            if st.session_state.camera_status != "running":
+                break
+            t_start = time.perf_counter()
+            ret, frame_bgr = cap.read()
+            decode_ms = (time.perf_counter() - t_start) * 1000.0
+            if not ret:
+                st.session_state.camera_error = "Falha ao ler webcam."
+                break
+            frame_count += 1
+            h, w = frame_bgr.shape[:2]
+
+            if roi is None:
+                roi = build_roi_from_state(w, h)
+            if line_detector is None:
+                line_detector = build_line_from_state(w, h)
+
+            now = time.perf_counter()
+            interval = now - last_read
+            if frame_count > 1 and interval > 0:
+                instant_fps = 1.0 / interval
+                if source_fps is None:
+                    source_fps = instant_fps
+                else:
+                    source_fps = 0.85 * source_fps + 0.15 * instant_fps
+            last_read = now
+            do_infer = detector is not None and (frame_count % sample_every == 0 or frame_count == 1)
+            infer_ms = None
+            if do_infer:
+                t_infer = time.perf_counter()
+                try:
+                    if tracking_enabled:
+                        last_detections = detector.track(frame_bgr, conf=conf_threshold, persist=True)
+                    else:
+                        last_detections = detector.detect(frame_bgr, conf=conf_threshold)
+                except Exception as exc:
+                    st.session_state.camera_error = f"Erro: {exc}"
+                    last_detections = []
+                infer_ms = (time.perf_counter() - t_infer) * 1000.0
+
+            # --- Motion / ROI / Line Crossing / Events (só fazem sentido
+            # com tracking ativo, já que dependem de track_id estável) -----
+            tracking_metrics = {}
+            motion_metrics = {}
+            roi_snapshot = None
+            line_crossings = []
+            timestamp = time.time()
+            if tracking_enabled and last_detections:
+                for det in last_detections:
+                    if det.track_id is not None:
+                        cx, cy = (det.x1 + det.x2) / 2, (det.y1 + det.y2) / 2
+                        history = track_history.setdefault(det.track_id, [])
+                        history.append((cx, cy))
+                        if len(history) > 10:
+                            history.pop(0)
+                tracking_metrics = compute_tracking_metrics(track_history, last_detections)
+
+                active_ids = [d.track_id for d in last_detections if d.track_id is not None]
+                current_active = set(active_ids)
+                for tid in current_active - previously_active_ids:
+                    label = next((d.label for d in last_detections if d.track_id == tid), None)
+                    event_engine.emit("OBJECT_ENTERED", object_id=tid, class_name=label, frame_index=frame_count, timestamp=timestamp)
+                for tid in previously_active_ids - current_active:
+                    event_engine.emit("OBJECT_EXITED", object_id=tid, frame_index=frame_count, timestamp=timestamp)
+                previously_active_ids = current_active
+
+                for tid, tm in tracking_metrics.items():
+                    m = motion_analyzer.update(tid, tm["dx"], tm["dy"], tm["displacement_px"])
+                    motion_metrics[tid] = m
+                    if m["transition_event"]:
+                        label = next((d.label for d in last_detections if d.track_id == tid), None)
+                        event_engine.emit(m["transition_event"], object_id=tid, class_name=label, frame_index=frame_count, timestamp=timestamp)
+                motion_analyzer.prune(active_ids)
+
+                tracked_objects = build_tracked_objects(last_detections)
+                if roi is not None:
+                    roi_snapshot = roi.update(tracked_objects, timestamp=timestamp, event_engine=event_engine, frame_index=frame_count)
+                if line_detector is not None:
+                    line_crossings = line_detector.update(tracked_objects, timestamp=timestamp, event_engine=event_engine, frame_index=frame_count)
+                    line_detector.prune(active_ids)
+
+                time_sec = now - loop_start
+                st.session_state.temporal_analyzer.record_detections(frame_count, time_sec, last_detections, motion_metrics)
+                if roi_snapshot is not None:
+                    st.session_state.temporal_analyzer.record_roi_snapshot(frame_count, time_sec, roi_snapshot)
+                if line_crossings:
+                    st.session_state.temporal_analyzer.record_line_crossings(line_crossings)
+
+            annotated = draw_detections(
+                frame_bgr,
+                last_detections,
+                show_details=show_details,
+                draw_centers=draw_centers,
+                show_confidence_legend=show_legend,
+            )
+            if roi is not None:
+                annotated = draw_roi(annotated, roi)
+            if line_detector is not None:
+                annotated = draw_line(annotated, line_detector)
+
+            st.session_state.latest_frame = annotated
+            frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            frame_placeholder.image(frame_rgb, channels="auto", use_container_width=True)
+            total_ms = (time.perf_counter() - t_start) * 1000.0
+            st.session_state.metrics.note_frame_displayed(
+                frame_index=frame_count,
+                time_sec=now - loop_start,
+                resolution=(w, h),
+                source_fps=source_fps,
+            )
+            if do_infer:
+                st.session_state.metrics.note_inference(
+                    last_detections,
+                    decode_ms=decode_ms,
+                    infer_ms=infer_ms,
+                    total_ms=total_ms,
                 )
+            with metrics_placeholder.container():
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Frame", frame_count)
+                c2.metric("Objetos", len(last_detections))
+                c3.metric("Confiança", f"{st.session_state.metrics.last_avg_confidence:.0%}" if st.session_state.metrics.last_avg_conf_count else "--")
 
+            if tracking_enabled and (roi_snapshot is not None or line_detector is not None or motion_metrics):
+                with intelligence_placeholder.container():
+                    status_counts = {}
+                    for m in motion_metrics.values():
+                        status_counts[m["status"]] = status_counts.get(m["status"], 0) + 1
+                    cols = st.columns(4)
+                    cols[0].metric("Parados", status_counts.get("PARADO", 0))
+                    cols[1].metric("Movendo", status_counts.get("MOVENDO", 0))
+                    cols[2].metric("Rápidos", status_counts.get("MOVIMENTO_RAPIDO", 0))
+                    if roi_snapshot is not None:
+                        cols[3].metric("Ocupação ROI", roi_snapshot["occupancy"])
+                    if line_detector is not None:
+                        st.caption(
+                            f"Linha: {line_detector.crossing_counts['forward']} A→B · "
+                            f"{line_detector.crossing_counts['backward']} B→A"
+                        )
+    finally:
+        cap.release()
+        if st.session_state.camera_status == "running":
+            st.session_state.camera_status = "idle"
 
-# =============================================================================
-# ANALYTICS
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Interface
+# -----------------------------------------------------------------------------
 
-st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
-st.markdown("### 📊 ANALYTICS")
-
-if objects or st.session_state.all_centers:
-    # Object activity
-    class_counts: Dict[str, int] = defaultdict(int)
-    for obj in objects:
-        class_counts[obj.class_name] += 1
-
-    if class_counts:
-        fig1 = object_activity_chart(dict(class_counts))
-        st.plotly_chart(fig1, use_container_width=True, config=MODEBAR_CONFIG)
-        st.caption("Objects detected in the current frame, grouped by class.")
-
-    # Confidence
-    if objects:
-        fig2 = confidence_chart(objects)
-        st.plotly_chart(fig2, use_container_width=True, config=MODEBAR_CONFIG)
-        st.caption("Confidence distribution of the current detections.")
-
-    # Motion
-    if objects:
-        fig3 = motion_chart(objects)
-        st.plotly_chart(fig3, use_container_width=True, config=MODEBAR_CONFIG)
-        st.caption("Estimated object displacement in pixels per frame.")
-
-    # Trajectory
-    trajectories = {
-        track_id: tracker.get_trajectory(track_id)
-        for track_id in tracker.histories
-    }
-    current_positions = {
-        obj.track_id: obj.center for obj in objects if obj.track_id > 0
-    }
-    class_names = {
-        obj.track_id: obj.class_name for obj in objects if obj.track_id > 0
-    }
-
-    for track_id in trajectories:
-        if track_id not in class_names:
-            class_names[track_id] = "obj"
-
-    if trajectories:
-        fig4 = trajectory_chart(
-            trajectories,
-            current_positions,
-            class_names,
-            selected_id=st.session_state.selected_track,
-            img_shape=img_shape,
-        )
-        st.plotly_chart(fig4, use_container_width=True, config=MODEBAR_CONFIG)
-        st.caption("Spatial paths of tracked objects with start / current markers.")
-
-    # Events
-    recent_events = events.get_recent(80)
-    if recent_events:
-        fig5 = event_timeline_chart(recent_events)
-        st.plotly_chart(fig5, use_container_width=True, config=MODEBAR_CONFIG)
-        st.caption("Temporal event markers.")
-
-    # Thermal
-    if intensity_map is not None:
-        fig6 = thermal_analysis_chart(intensity_map)
-        st.plotly_chart(fig6, use_container_width=True, config=MODEBAR_CONFIG)
-        st.caption("Relative image intensity distribution. Not calibrated temperature.")
-
-    # Movement density
-    if st.session_state.all_centers and img_shape is not None:
-        try:
-            fig7 = movement_density_heatmap(
-                st.session_state.all_centers,
-                img_shape,
-            )
-            st.plotly_chart(fig7, use_container_width=True, config=MODEBAR_CONFIG)
-            st.caption("Spatial concentration of tracked object positions.")
-        except Exception as exc:
-            logger.exception("Movement density failed: %s", exc)
-            st.info("Movement density could not be generated.")
-
-else:
-    st.markdown(
-        '<div class="info-box">📂 Load an image or video to generate analytics.</div>',
-        unsafe_allow_html=True,
-    )
-
-
-# =============================================================================
-# EVENT TIMELINE
-# =============================================================================
-
-st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
-st.markdown("### ⏱️ EVENT TIMELINE")
-
-recent = events.get_recent(30)
-
-if recent:
-    lines = []
-    t0 = recent[0].timestamp
-
-    for event in reversed(recent):
-        t_rel = event.timestamp - t0
-        direction = f" - {event.direction}" if event.direction else ""
-        lines.append(
-            f"{t_rel:06.1f}s  {event.event_type:<16}  ID {event.track_id:<4}  {event.class_name}{direction}"
-        )
-
-    st.code("\n".join(lines), language=None)
-else:
-    st.markdown(
-        '<div class="info-box">📭 No events recorded yet.</div>',
-        unsafe_allow_html=True,
-    )
-
-
-# =============================================================================
-# FOOTER
-# =============================================================================
-
-st.markdown('<hr class="block-divider">', unsafe_allow_html=True)
+# Cabeçalho refinado
 st.markdown(
-    '<div class="info-box">'
-    '🚦 VISION MINI LAB - Relative Thermal Intensity (not calibrated temperature) - '
-    'Speed = pixels/frame - Physical metrics require geometric calibration.'
-    '</div>',
+    """
+    <div style="margin-bottom: -10px;">
+        <h1 style="font-size: 2.5rem; font-weight: 600; margin-bottom: 0;">VISION MINI LAB</h1>
+        <p style="font-size: 1rem; color: #666; margin-top: 0;">Computer Vision Scene Analysis — detection, spatial & temporal metrics</p>
+        <hr style="margin-top: 0.5rem; margin-bottom: 1rem; border: 0; border-top: 2px solid #eee;">
+    </div>
+    """,
     unsafe_allow_html=True,
 )
+
+# Sidebar minimalista
+with st.sidebar:
+    st.subheader("⚙️ Configurações")
+    conf_threshold = st.slider(
+        "Confidence threshold",
+        min_value=0.05,
+        max_value=0.95,
+        value=0.25,
+        step=0.05,
+        key="conf_threshold",
+    )
+    sample_every = st.selectbox(
+        "Sample every (frames)",
+        options=[1, 2, 3, 5, 10],
+        index=0,
+        key="sample_every",
+    )
+    tracking_enabled = st.checkbox("Tracking", value=True, key="tracking_enabled")
+    draw_centers = st.checkbox("Mostrar centros", value=True, key="draw_centers")
+    show_trajectory = st.checkbox("Mostrar trajetórias", value=False, key="show_trajectory")
+    show_legend = st.checkbox("Mostrar legenda de confiança", value=True, key="show_legend")
+    st.divider()
+
+    st.subheader("Zona de Interesse (ROI)")
+    st.caption("Aplica-se aos modos Vídeo e Câmera (requer Tracking ativo).")
+    roi_enabled = st.checkbox("Ativar ROI", value=False, key="roi_enabled")
+    if roi_enabled:
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            st.slider("ROI X1 (%)", 0, 100, 25, key="roi_x1")
+            st.slider("ROI Y1 (%)", 0, 100, 25, key="roi_y1")
+        with rc2:
+            st.slider("ROI X2 (%)", 0, 100, 75, key="roi_x2")
+            st.slider("ROI Y2 (%)", 0, 100, 75, key="roi_y2")
+
+    st.subheader("Linha de Contagem")
+    line_enabled = st.checkbox("Ativar linha de contagem", value=False, key="line_enabled")
+    if line_enabled:
+        lc1, lc2 = st.columns(2)
+        with lc1:
+            st.slider("Linha X1 (%)", 0, 100, 10, key="line_x1")
+            st.slider("Linha Y1 (%)", 0, 100, 50, key="line_y1")
+        with lc2:
+            st.slider("Linha X2 (%)", 0, 100, 90, key="line_x2")
+            st.slider("Linha Y2 (%)", 0, 100, 50, key="line_y2")
+
+    st.divider()
+    st.button("📸 CAPTURE FRAME", on_click=capture_current_frame, use_container_width=True)
+    if st.session_state.get("capture_message"):
+        st.caption(st.session_state.capture_message)
+    st.divider()
+    groq_key = get_groq_api_key()
+    st.caption(f"🧠 GROQ: {'✅ ENABLED' if groq_key else '❌ DISABLED'}")
+    if groq_key:
+        st.button("🔍 Descrever frame", on_click=run_groq_on_latest, use_container_width=True)
+    if st.session_state.get("groq_message"):
+        st.markdown(f"**GROQ:** {st.session_state.groq_message}")
+    st.caption("🚀 ARQTECH: NOT TRAINED")
+    if detector_error:
+        st.warning(f"⚠️ YOLO indisponível: {detector_error}")
+    if detector is not None and detector.last_tracking_error:
+        st.warning(f"⚠️ Tracking indisponível: {detector.last_tracking_error}")
+
+tab_image, tab_video, tab_camera, tab_metrics = st.tabs(["📷 IMAGEM", "🎬 VÍDEO", "📹 CÂMERA", "📊 ANALYTICS"])
+
+# =============================================================================
+# ABA IMAGEM (simplificada com gráficos e relatório)
+# =============================================================================
+with tab_image:
+    uploaded_image = st.file_uploader(
+        "Carregar imagem",
+        type=["jpg", "jpeg", "png", "webp"],
+        key="image_uploader",
+    )
+    if uploaded_image is not None:
+        img = decode_image_bytes(uploaded_image.getvalue())
+        if img is None:
+            st.error("❌ Imagem inválida.")
+        else:
+            h, w = img.shape[:2]
+
+            with st.sidebar:
+                st.divider()
+                st.subheader("🖼️ Visualização")
+                show_grid = st.checkbox("Mostrar grade espacial", value=False, key="show_grid")
+
+            if detector is not None:
+                try:
+                    with st.spinner("🔍 Executando YOLO..."):
+                        detections = detector.detect(img, conf=conf_threshold)
+
+                    # Anotação simplificada
+                    annotated = draw_detections(
+                        img,
+                        detections,
+                        draw_centers=draw_centers,
+                        show_confidence_legend=show_legend,
+                    )
+
+                    if show_grid:
+                        annotated = draw_grid(annotated)
+
+                    st.session_state.latest_frame = annotated
+
+                    col_original, col_result = st.columns(2)
+                    with col_original:
+                        st.markdown("**🖼️ Original**")
+                        st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), channels="auto", use_container_width=True)
+                    with col_result:
+                        st.markdown("**🎯 YOLO**")
+                        st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="auto", use_container_width=True)
+
+                    if detections:
+                        # Gerar relatório uma única vez
+                        report = generate_report(detections, w, h, conf_threshold)
+
+                        # ============================================================
+                        # RESUMO DA DETECÇÃO (melhorado com 8 métricas)
+                        # ============================================================
+                        st.divider()
+                        st.subheader("📊 Resumo da Detecção")
+
+                        confs = [d.confidence for d in detections]
+                        avg_conf = np.mean(confs) if confs else 0.0
+                        classes_set = set(d.label for d in detections)
+                        class_counts = {}
+                        for d in detections:
+                            class_counts[d.label] = class_counts.get(d.label, 0) + 1
+                        dominant_class = max(class_counts, key=class_counts.get) if class_counts else None
+
+                        # Métricas do relatório
+                        occupancy = report['executive_summary']['union_coverage'] * 100
+                        density = report['executive_summary']['density']
+                        high_conf_count = sum(1 for c in confs if c >= 0.7)
+
+                        # Primeira linha
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Objetos", len(detections))
+                        col2.metric("Classes", len(classes_set))
+                        col3.metric("Confiança média", f"{avg_conf:.1%}")
+                        if avg_conf >= 0.7:
+                            quality = "🔵 Alta"
+                        elif avg_conf >= 0.4:
+                            quality = "🟡 Média"
+                        else:
+                            quality = "🔴 Baixa"
+                        col4.metric("Qualidade", quality)
+
+                        # Segunda linha
+                        col5, col6, col7, col8 = st.columns(4)
+                        col5.metric("Classe dominante", dominant_class or "N/A")
+                        col6.metric("Ocupação", f"{occupancy:.1f}%")
+                        col7.metric("Densidade", f"{density:.1f} obj/Mpx")
+                        col8.metric("Alta confiança", f"{high_conf_count} ({high_conf_count/len(detections):.0%})")
+
+                        # ============================================================
+                        # TABELA DE DETECÇÕES
+                        # ============================================================
+                        st.subheader("📋 Detecções")
+                        df_det = pd.DataFrame([
+                            {
+                                "ID": i+1,
+                                "Classe": d.label.upper(),
+                                "Confiança": f"{d.confidence:.0%}",
+                                "Área (px²)": compute_box_metrics(d.x1, d.y1, d.x2, d.y2)["area"],
+                            }
+                            for i, d in enumerate(detections)
+                        ])
+                        st.dataframe(df_det, use_container_width=True, hide_index=True)
+
+                        # ============================================================
+                        # GRÁFICOS ANALÍTICOS (Plotly — hover, zoom, pan)
+                        # ============================================================
+                        with st.expander("📊 Ver gráficos analíticos (opcional)"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.plotly_chart(charts.confidence_histogram(confs), use_container_width=True)
+                            with col2:
+                                st.plotly_chart(charts.class_bar_chart(class_counts), use_container_width=True)
+
+                        # ============================================================
+                        # RELATÓRIO TÉCNICO COMPLETO (formatado, dentro de expansor)
+                        # ============================================================
+                        with st.expander("📄 Ver relatório técnico completo (opcional)"):
+                            display_report_section(report)
+
+                        # ============================================================
+                        # EXPORTAÇÃO
+                        # ============================================================
+                        st.divider()
+                        st.subheader("📤 Exportar")
+
+                        export_col1, export_col2 = st.columns(2)
+                        with export_col1:
+                            csv_data = df_det.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Baixar CSV",
+                                data=csv_data,
+                                file_name=f"detections_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                            )
+                        with export_col2:
+                            json_data = export_report_json(report)
+                            st.download_button(
+                                label="📥 Baixar JSON",
+                                data=json_data,
+                                file_name=f"report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                                mime="application/json",
+                                use_container_width=True,
+                            )
+
+                    else:
+                        st.info("🔍 Nenhum objeto detectado.")
+
+                except Exception as exc:
+                    st.error(f"❌ Erro: {exc}")
+            else:
+                st.warning("⚠️ Detector YOLO indisponível.")
+
+# =============================================================================
+# ABA VÍDEO (mantida, com a mesma lógica simplificada)
+# =============================================================================
+with tab_video:
+    uploaded_video = st.file_uploader(
+        "Carregar vídeo",
+        type=["mp4", "avi", "mov", "mkv"],
+        key="video_uploader",
+    )
+    if uploaded_video is not None:
+        token = (uploaded_video.name, uploaded_video.size)
+        if st.session_state.video_upload_token != token or st.session_state.video_meta is None:
+            try:
+                old_path = st.session_state.video_path
+                if old_path and Path(old_path).exists():
+                    Path(old_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                saved_path = save_uploaded_file(uploaded_video, ALLOWED_VIDEO_EXTENSIONS, target_dir="outputs/uploads")
+                meta = get_video_metadata(saved_path)
+                st.session_state.video_path = str(saved_path)
+                st.session_state.video_meta = meta
+                st.session_state.video_upload_token = token
+                st.session_state.video_status = "idle"
+                st.session_state.video_frame_index = 0
+                st.session_state.video_error = None
+                st.session_state.metrics.reset()
+                st.session_state.temporal_analyzer = TemporalAnalyzer(max_history=300)
+            except Exception as exc:
+                st.error(f"❌ Erro ao carregar: {exc}")
+
+        meta = st.session_state.video_meta
+        if meta is None:
+            st.info("📥 Carregando...")
+        elif not meta.ok:
+            st.error(meta.error)
+        else:
+            st.caption(f"**Arquivo:** {uploaded_video.name}")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Duração", f"{meta.duration_sec:.2f}s" if meta.duration_sec else "--")
+            c2.metric("Resolução", f"{meta.width}x{meta.height}")
+            c3.metric("FPS", f"{meta.fps:.1f}" if meta.fps else "--")
+            c4.metric("Frames", meta.frame_count if meta.frame_count else "--")
+            c5.metric("Tamanho", f"{meta.file_size_bytes / (1024*1024):.2f} MB")
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if st.button("▶ INICIAR", use_container_width=True):
+                    start_video()
+            with col2:
+                if st.button("⏸ PAUSAR", use_container_width=True):
+                    pause_video()
+            with col3:
+                if st.button("▶ RETOMAR", use_container_width=True):
+                    resume_video()
+            with col4:
+                if st.button("⏹ PARAR", use_container_width=True):
+                    stop_video()
+
+            if st.session_state.video_error:
+                st.error(st.session_state.video_error)
+
+            frame_placeholder = st.empty()
+            metrics_placeholder = st.empty()
+            temporal_placeholder = st.empty()
+            status_placeholder = st.empty()
+
+            if st.session_state.video_status in ("running", "paused"):
+                processor = st.session_state.processor
+                if processor:
+                    status = processor.get_status()
+                    latest = processor.get_latest_result()
+                    if latest:
+                        detections = latest.get("detections", [])
+                        tracking_metrics = latest.get("tracking_metrics", {})
+                        motion_metrics = latest.get("motion_metrics", {})
+                        roi_snapshot = latest.get("roi_snapshot")
+                        line_crossings = latest.get("line_crossings") or []
+                        new_events = latest.get("new_events") or []
+                        meta = st.session_state.video_meta
+                        time_sec = latest["frame_index"] / (meta.fps if meta and meta.fps else 30.0)
+
+                        st.session_state.temporal_analyzer.push_frame(
+                            latest["frame_index"],
+                            detections,
+                            tracking_metrics
+                        )
+                        st.session_state.temporal_analyzer.record_detections(
+                            latest["frame_index"], time_sec, detections, motion_metrics
+                        )
+                        if roi_snapshot is not None:
+                            st.session_state.temporal_analyzer.record_roi_snapshot(
+                                latest["frame_index"], time_sec, roi_snapshot
+                            )
+                        if line_crossings:
+                            st.session_state.temporal_analyzer.record_line_crossings(line_crossings)
+                        if new_events:
+                            st.session_state.temporal_analyzer.record_events(new_events)
+
+                        track_history = {}
+                        for tid, data in tracking_metrics.items():
+                            if "history" in data:
+                                track_history[tid] = data["history"]
+
+                        annotated = draw_detections(
+                            latest["frame"],
+                            detections,
+                            draw_centers=draw_centers,
+                            draw_tracks=show_trajectory,
+                            track_history=track_history if show_trajectory else None,
+                            show_confidence_legend=show_legend,
+                        )
+
+                        frame_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                        frame_placeholder.image(frame_rgb, channels="auto", use_container_width=True)
+
+                        m = latest["metrics"]
+
+                        with metrics_placeholder.container():
+                            c1, c2, c3, c4, c5 = st.columns(5)
+                            c1.metric("Frame", latest["frame_index"])
+                            c2.metric("Objetos", m["object_count"])
+                            c3.metric("Confiança", f"{m['confidence']:.0%}")
+                            c4.metric("Status", st.session_state.video_status)
+                            c5.metric("Tracking", f"{len(tracking_metrics)} ativos")
+
+                            if m.get("classes"):
+                                st.caption(" | ".join(f"{k} {v}" for k, v in m["classes"].items()))
+
+                            if motion_metrics or roi_snapshot is not None or st.session_state.get("line_enabled"):
+                                status_counts = {}
+                                for mm in motion_metrics.values():
+                                    status_counts[mm["status"]] = status_counts.get(mm["status"], 0) + 1
+                                ic1, ic2, ic3, ic4 = st.columns(4)
+                                ic1.metric("Parados", status_counts.get("PARADO", 0))
+                                ic2.metric("Movendo", status_counts.get("MOVENDO", 0))
+                                ic3.metric("Rápidos", status_counts.get("MOVIMENTO_RAPIDO", 0))
+                                if roi_snapshot is not None:
+                                    ic4.metric("Ocupação ROI", roi_snapshot["occupancy"])
+                                if st.session_state.processor and st.session_state.processor.line_detector:
+                                    counts = st.session_state.processor.line_detector.crossing_counts
+                                    st.caption(f"Linha: {counts['forward']} A→B · {counts['backward']} B→A")
+
+                            if tracking_metrics:
+                                with st.expander("📊 Detalhes do Tracking", expanded=False):
+                                    for tid, data in tracking_metrics.items():
+                                        mm = motion_metrics.get(tid, {})
+                                        extra = f" | {mm.get('status', '')} ({mm.get('direction', data['direction'])})" if mm else ""
+                                        st.write(f"**ID {tid}**: {data['direction']} | Deslocamento: {data['displacement_px']:.1f} px/frame{extra}")
+                                        st.caption(f"ΔX: {data['dx']:.1f}  ΔY: {data['dy']:.1f}")
+
+                            if new_events:
+                                with st.expander(f"🧭 Eventos recentes ({len(new_events)} neste frame)", expanded=False):
+                                    for ev in new_events[-10:]:
+                                        st.caption(f"{ev['event_type']} — ID {ev['object_id']} ({ev.get('class_name') or '—'})")
+
+
+                        with temporal_placeholder.container():
+                            temporal_stats = st.session_state.temporal_analyzer.get_stats()
+                            if temporal_stats["total_frames"] > 0:
+                                st.subheader("⏱️ Análise Temporal")
+                                col1, col2, col3, col4 = st.columns(4)
+                                col1.metric("Frames processados", temporal_stats["total_frames"])
+                                col2.metric("Média objetos/frame", f"{temporal_stats['avg_objects_per_frame']:.1f}")
+                                col3.metric("Média tracks ativos", f"{temporal_stats['avg_tracks']:.1f}")
+                                col4.metric("Frames com tracking", temporal_stats["frames_with_tracking"])
+
+                                hist = st.session_state.temporal_analyzer.get_object_count_history()
+                                if len(hist) > 1:
+                                    st.caption("Evolução do número de objetos por frame")
+                                    st.line_chart(hist)
+
+                    status_placeholder.caption(
+                        f"Fila frames: {status.get('queue_size', 0)} | "
+                        f"Fila resultados: {status.get('result_queue_size', 0)} | "
+                        f"Erro: {status.get('error') or 'Nenhum'}"
+                    )
+                    time.sleep(0.05)
+                    st.rerun()
+                else:
+                    st.info("⏳ Processador não inicializado.")
+            elif st.session_state.video_status == "stopped":
+                st.info("⏹ Vídeo parado.")
+            elif st.session_state.video_status == "finished":
+                st.success("✅ Processamento concluído.")
+            else:
+                st.info("⏳ Aguardando início.")
+
+# =============================================================================
+# ABA CÂMERA (mantida)
+# =============================================================================
+with tab_camera:
+    b1, b2 = st.columns(2)
+    b1.button("📸 START CAMERA", on_click=start_camera, use_container_width=True)
+    b2.button("⏹ STOP CAMERA", on_click=stop_camera, use_container_width=True)
+    if st.session_state.camera_error:
+        st.error(st.session_state.camera_error)
+    if st.session_state.camera_status == "running":
+        run_camera_loop(conf_threshold, sample_every, tracking_enabled, show_details=False, draw_centers=draw_centers, show_legend=show_legend)
+    elif st.session_state.camera_status == "stopped":
+        st.info("⏹ Câmera parada.")
+    else:
+        st.info("📹 Câmera inativa.")
+
+# =============================================================================
+# ABA ANALYTICS (reconstruída em Plotly: Overview, Objects, Motion,
+# Trajectories, Heatmap, Events)
+# =============================================================================
+with tab_metrics:
+    st.subheader("📊 Métricas da Sessão")
+    metrics = st.session_state.metrics
+    if metrics.frames_analyzed == 0 and metrics.last_frame_index is None:
+        st.info("📭 Nenhuma análise executada.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Frames analisados", metrics.frames_analyzed)
+        c2.metric("Total de objetos", metrics.total_objects)
+        c3.metric("Confiança média", f"{metrics.avg_confidence:.1%}" if metrics.conf_count else "--")
+        c4.metric("FPS processamento", f"{metrics.processing_fps:.1f}" if metrics.processing_fps else "--")
+        if metrics.class_counts:
+            st.caption("Objetos por classe (acumulado):")
+            st.caption(" | ".join(f"{k} {v}" for k, v in metrics.class_counts.items()))
+
+    st.divider()
+    st.subheader("Analytics")
+
+    ta = st.session_state.temporal_analyzer
+    records = ta.get_detection_dataframe_records() if ta else []
+
+    temporal_stats = ta.get_stats() if ta else {}
+    if temporal_stats and temporal_stats["total_frames"] > 0:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Frames processados", temporal_stats["total_frames"])
+        c2.metric("Média objetos/frame", f"{temporal_stats['avg_objects_per_frame']:.1f}")
+        c3.metric("Máx. objetos", temporal_stats["max_objects"])
+        c4.metric("Mín. objetos", temporal_stats["min_objects"])
+
+    if not records:
+        st.info("Sem dados de detecção nesta sessão. Rode Vídeo ou Câmera (com Tracking ativo) para popular o Analytics.")
+    else:
+        df = pd.DataFrame(records)
+
+        section = st.radio(
+            "Seção",
+            ["Overview", "Objects", "Motion", "Trajectories", "Heatmap", "Events"],
+            horizontal=True,
+            key="analytics_section",
+        )
+
+        video_meta = st.session_state.get("video_meta")
+        frame_width = video_meta.width if video_meta else None
+        frame_height = video_meta.height if video_meta else None
+
+        if section == "Overview":
+            by_frame = df.groupby("frame_index")
+            counts = by_frame.size()
+            times = by_frame["time_sec"].first()
+            st.plotly_chart(
+                charts.object_activity_overview(times.values, counts.values),
+                use_container_width=True,
+            )
+            st.plotly_chart(
+                charts.confidence_over_time(df["time_sec"], df["confidence"], df["class_name"]),
+                use_container_width=True,
+            )
+
+        elif section == "Objects":
+            obj_summary = df.dropna(subset=["track_id"]).groupby("track_id").agg(
+                classe=("class_name", "first"),
+                confianca_media=("confidence", "mean"),
+                status_atual=("status", "last"),
+                direcao_atual=("direction", "last"),
+                velocidade_media=("speed", "mean"),
+                frames_em_cena=("frame_index", "nunique"),
+            ).reset_index()
+            if obj_summary.empty:
+                st.info("Nenhum objeto com ID de tracking nesta sessão.")
+            else:
+                obj_summary["track_id"] = obj_summary["track_id"].astype(int)
+                st.dataframe(
+                    obj_summary.style.format({
+                        "confianca_media": "{:.0%}",
+                        "velocidade_media": "{:.1f}",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+                ids = sorted(df["track_id"].dropna().astype(int).unique().tolist())
+                selected_id = st.selectbox("Selecionar objeto (ID)", options=["Todos"] + ids, key="analytics_object_id")
+                filtered = df if selected_id == "Todos" else df[df["track_id"] == selected_id]
+                st.plotly_chart(
+                    charts.confidence_over_time(filtered["time_sec"], filtered["confidence"], filtered["class_name"]),
+                    use_container_width=True,
+                )
+
+        elif section == "Motion":
+            motion_df = df.dropna(subset=["speed"])
+            if motion_df.empty:
+                st.info("Sem dados de Motion Intelligence ainda (requer Tracking ativo).")
+            else:
+                agg = motion_df.groupby("frame_index").agg(
+                    time_sec=("time_sec", "first"),
+                    avg_speed=("speed", "mean"),
+                    moving=("status", lambda s: (s != "PARADO").sum()),
+                ).reset_index()
+                st.plotly_chart(
+                    charts.motion_intensity(agg["time_sec"], agg["avg_speed"], agg["moving"]),
+                    use_container_width=True,
+                )
+                st.plotly_chart(charts.speed_distribution(motion_df["speed"]), use_container_width=True)
+
+        elif section == "Trajectories":
+            trajectories = {tid: ta.get_trajectory(tid) for tid in ta.trajectory_points.keys()}
+            if not trajectories:
+                st.info("Nenhuma trajetória registrada ainda.")
+            else:
+                ids = sorted(trajectories.keys())
+                selected = st.multiselect(
+                    "Objetos", options=ids, default=ids[: min(5, len(ids))], key="analytics_trajectory_ids"
+                )
+                subset = {tid: trajectories[tid] for tid in selected} if selected else trajectories
+                st.plotly_chart(
+                    charts.trajectory_plot(subset, image_width=frame_width, image_height=frame_height),
+                    use_container_width=True,
+                )
+
+        elif section == "Heatmap":
+            points = ta.get_heatmap_points()
+            if len(points) < 20:
+                st.info("Dados insuficientes para o Movement Heatmap ainda — poucos pontos de movimento registrados.")
+            else:
+                st.plotly_chart(
+                    charts.movement_heatmap(points, image_width=frame_width, image_height=frame_height),
+                    use_container_width=True,
+                )
+
+        elif section == "Events":
+            if not ta.event_log:
+                st.info("Nenhum evento registrado ainda (ROI, Line Crossing e Motion emitem eventos).")
+            else:
+                st.plotly_chart(charts.event_timeline(ta.event_log), use_container_width=True)
+
+                if ta.roi_history:
+                    st.plotly_chart(charts.roi_occupancy_chart(ta.roi_history), use_container_width=True)
+                    peak = max(r["occupancy"] for r in ta.roi_history)
+                    avg = sum(r["occupancy"] for r in ta.roi_history) / len(ta.roi_history)
+                    c1, c2 = st.columns(2)
+                    c1.metric("Pico de ocupação (ROI)", peak)
+                    c2.metric("Ocupação média (ROI)", f"{avg:.1f}")
+
+                if ta.line_crossing_log:
+                    st.plotly_chart(charts.line_crossing_chart(ta.line_crossing_log), use_container_width=True)
+                elif st.session_state.get("line_enabled"):
+                    st.caption("Nenhum cruzamento de linha detectado ainda.")
+
+    st.divider()
+    st.subheader("🚀 ARQTECH")
+    st.write("**STATUS:** NOT TRAINED")
+    st.caption("ARQTECH será o modelo experimental futuro.")
+    st.caption("YOLO: EXTERNAL BASELINE")
+    st.caption(f"🧠 GROQ: {'ENABLED' if get_groq_api_key() else 'DISABLED'}")
