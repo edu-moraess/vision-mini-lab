@@ -1,82 +1,53 @@
-"""Tests for event engine."""
-
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import pytest
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from src.events.events import EventEngine
-from src.perception.tracker import TrackedObject
+from src.events import EventEngine, ROI_ENTER, ROI_EXIT, LINE_CROSSED
 
 
-def _obj(tid, cx, cy, state="STATIONARY", direction="STATIONARY"):
-    o = TrackedObject(
-        track_id=tid,
-        class_id=0,
-        class_name="person",
-        confidence=0.9,
-        bbox=(cx - 5, cy - 5, cx + 5, cy + 5),
-        center=(cx, cy),
-    )
-    o.state = state
-    o.direction = direction
-    return o
+def test_emit_and_count():
+    engine = EventEngine()
+    engine.emit(ROI_ENTER, object_id=1, class_name="person", frame_index=10)
+    engine.emit(LINE_CROSSED, object_id=2, class_name="car", frame_index=11, metadata={"direction": "A_PARA_B"})
+
+    assert len(engine) == 2
+    assert engine.counts_by_type() == {ROI_ENTER: 1, LINE_CROSSED: 1}
 
 
-def test_roi_enter_exit():
-    eng = EventEngine()
-    eng.set_roi((50, 50, 150, 150))
+def test_get_events_filters():
+    engine = EventEngine()
+    engine.emit(ROI_ENTER, object_id=1, frame_index=1)
+    engine.emit(ROI_EXIT, object_id=1, frame_index=2)
+    engine.emit(ROI_ENTER, object_id=2, frame_index=3)
 
-    # outside
-    eng.update([_obj(1, 10, 10)])
-    assert len(eng.events) == 0
+    only_enter = engine.get_events(event_type=ROI_ENTER)
+    assert len(only_enter) == 2
 
-    # enter
-    new = eng.update([_obj(1, 100, 100)])
-    assert any(e.event_type == "OBJECT_ENTERED" for e in new)
+    only_obj1 = engine.get_events(object_id=1)
+    assert len(only_obj1) == 2
 
-    # stay
-    eng.update([_obj(1, 110, 110)])
-    # exit
-    new = eng.update([_obj(1, 10, 10)])
-    assert any(e.event_type == "OBJECT_EXITED" for e in new)
+    limited = engine.get_events(limit=1)
+    assert len(limited) == 1
 
 
-def test_line_crossing():
-    eng = EventEngine(line_debounce_sec=0.0)
-    eng.set_line((0, 100), (200, 100))  # horizontal line
-
-    # start above
-    eng.update([_obj(1, 50, 50, state="MOVING", direction="DOWN")])
-    # cross below
-    new = eng.update([_obj(1, 50, 150, state="MOVING", direction="DOWN")])
-    assert any(e.event_type == "LINE_CROSSED" for e in new)
-
-
-def test_motion_events():
-    eng = EventEngine()
-    eng.update([_obj(1, 0, 0, state="STATIONARY")])
-    new = eng.update([_obj(1, 0, 0, state="MOVING", direction="RIGHT")])
-    assert any(e.event_type == "STARTED_MOVING" for e in new)
-
-    new = eng.update([_obj(1, 0, 0, state="STATIONARY")])
-    assert any(e.event_type == "STOPPED" for e in new)
-
-
-def test_max_events():
-    eng = EventEngine(max_events=5)
-    eng.set_roi((0, 0, 1000, 1000))
+def test_history_is_bounded():
+    engine = EventEngine(max_history=5)
     for i in range(10):
-        eng.update([_obj(i, 50, 50)])
-        eng.update([])  # force exit on next? simplify
-    assert len(eng.events) <= 5
+        engine.emit(ROI_ENTER, object_id=i, frame_index=i)
+    assert len(engine) == 5
 
 
-def test_count_inside():
-    eng = EventEngine()
-    eng.set_roi((0, 0, 100, 100))
-    objs = [_obj(1, 50, 50), _obj(2, 200, 200)]
-    assert eng.count_inside_roi(objs) == 1
+def test_reset_clears_state():
+    engine = EventEngine()
+    engine.emit(ROI_ENTER, object_id=1)
+    engine.reset()
+    assert len(engine) == 0
+    assert engine.counts_by_type() == {}
+
+
+def test_to_dict_roundtrip():
+    engine = EventEngine()
+    engine.emit(LINE_CROSSED, object_id=7, class_name="person", metadata={"direction": "A_PARA_B"})
+    as_list = engine.to_list()
+    assert as_list[0]["object_id"] == 7
+    assert as_list[0]["metadata"]["direction"] == "A_PARA_B"
